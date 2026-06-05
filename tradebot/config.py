@@ -15,9 +15,13 @@ NO_NEW_TRADES_BEFORE_CLOSE_MIN = 30
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = Path.home() / ".tradebot"
 STATE_FILE = STATE_DIR / "state.json"
+DB_FILE = STATE_DIR / "tradebot.sqlite"
 
 KILLSWITCH_HOST = "127.0.0.1"
 KILLSWITCH_PORT = 8765
+SERVICE_HOST = "127.0.0.1"
+SERVICE_PORT = 8787
+SERVICE_POLL_SECONDS = 5
 
 
 @dataclass(frozen=True)

@@ -21,6 +21,8 @@ env/
 ~/.tradebot/
 state.json
 *.log
+*.sqlite
+*.sqlite-*
 
 # OS
 .DS_Store

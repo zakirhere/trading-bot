@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
+import threading
 
-from . import broker, config, killswitch, notify, signals, state
+from . import api, broker, config, db, killswitch, notify, signals, state, worker
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -84,6 +86,45 @@ def cmd_account_check() -> int:
         f"next_open={clock.get('next_open')} "
         f"next_close={clock.get('next_close')}"
     )
+    return 0
+
+
+def cmd_run_worker_once(*, force_closed: bool) -> int:
+    conn = db.connect()
+    try:
+        results = worker.run_once(conn, force_closed=force_closed)
+    finally:
+        conn.close()
+    print(f"processed={len(results)}")
+    for req in results:
+        print(f"  id={req.id} status={req.status} symbol={req.symbol} reason={req.reason!r}")
+    return 0
+
+
+def cmd_serve(*, force_closed: bool) -> int:
+    stop_event = threading.Event()
+
+    def stop(_signum, _frame):
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+
+    server = api.start_in_thread()
+    thread = threading.Thread(
+        target=worker.run_forever,
+        kwargs={"force_closed": force_closed, "stop_event": stop_event},
+        daemon=True,
+        name="worker",
+    )
+    thread.start()
+    print(f"dashboard=http://{config.SERVICE_HOST}:{config.SERVICE_PORT}")
+    try:
+        while not stop_event.is_set():
+            stop_event.wait(1)
+    finally:
+        server.shutdown()
+        server.server_close()
     return 0
 
 
@@ -194,6 +235,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="do not start the killswitch HTTP server")
     p.add_argument("--force-closed", action="store_true",
                    help="proceed even if Alpaca clock reports market closed")
+    p.add_argument("--serve", action="store_true",
+                   help="run persistent dashboard/API and queue worker")
+    p.add_argument("--run-worker-once", action="store_true",
+                   help="process currently due queued trade requests and exit")
     p.add_argument("--symbol", help="stock symbol for a plumbing market-buy signal")
     p.add_argument("--qty", type=float, help="share quantity for --symbol")
     args = p.parse_args(argv)
@@ -208,6 +253,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_status()
     if args.account_check:
         return cmd_account_check()
+    if args.run_worker_once:
+        return cmd_run_worker_once(force_closed=args.force_closed)
+    if args.serve:
+        return cmd_serve(force_closed=args.force_closed)
     return cmd_run(
         dry_run=args.dry_run,
         no_server=args.no_server,

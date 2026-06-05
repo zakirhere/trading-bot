@@ -36,6 +36,35 @@ Rehearse the signal without submitting an order:
 The launchd job is also dry-run by default. A real paper order requires running
 the daemon without `--dry-run`.
 
+## Persistent Service
+
+The preferred local workflow is one persistent service with a durable SQLite
+queue instead of one launchd job per trade.
+
+Run it manually:
+
+```bash
+.venv/bin/python -m tradebot.daemon --serve
+```
+
+Open the dashboard:
+
+```text
+http://127.0.0.1:8787
+```
+
+Queue a stock market buy through the API:
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/trade-requests \
+  -H 'Content-Type: application/json' \
+  -d '{"symbol":"AAPL","qty":1,"run_at":"2026-06-05T12:00:00-07:00"}'
+```
+
+Queued requests are stored at `~/.tradebot/tradebot.sqlite`. The worker polls
+the queue, applies the same paper/live config and risk gates, then submits due
+orders.
+
 ## Slack Notifications
 
 Slack alerts use an incoming webhook URL stored only in `.env`. Per Slack's
@@ -78,10 +107,10 @@ Edit `.env` with Alpaca paper credentials, then verify:
 Install the Mac mini launchd job:
 
 ```bash
-deploy/macos/install-launchd.sh
+deploy/macos/install-service.sh
 ```
 
-The deployed launchd job runs with `--dry-run --no-server` by default. Check it:
+The deployed service starts at login and keeps running. Check it:
 
 ```bash
 deploy/macos/status.sh
@@ -91,6 +120,7 @@ Remove it:
 
 ```bash
 deploy/macos/uninstall-launchd.sh
+deploy/macos/uninstall-service.sh
 ```
 
 For updates from this development machine, push to GitHub, then SSH to the Mac
@@ -98,6 +128,6 @@ mini and run:
 
 ```bash
 git pull
-deploy/macos/uninstall-launchd.sh
-deploy/macos/install-launchd.sh
+deploy/macos/uninstall-service.sh
+deploy/macos/install-service.sh
 ```

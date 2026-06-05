@@ -2,7 +2,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-LABEL="com.tradebot.market-open"
+TIMER_LABEL="com.tradebot.market-open"
+SERVICE_LABEL="com.tradebot.service"
 
 echo "Repo:"
 git -C "${PROJECT_ROOT}" status --short --branch
@@ -12,5 +13,9 @@ echo "Bot state:"
 "${PROJECT_ROOT}/.venv/bin/python" -m tradebot.daemon --status
 
 echo
-echo "launchd:"
-launchctl print "gui/$(id -u)/${LABEL}" 2>/dev/null || echo "not loaded"
+echo "launchd timer:"
+launchctl print "gui/$(id -u)/${TIMER_LABEL}" 2>/dev/null || echo "not loaded"
+
+echo
+echo "launchd service:"
+launchctl print "gui/$(id -u)/${SERVICE_LABEL}" 2>/dev/null || echo "not loaded"
