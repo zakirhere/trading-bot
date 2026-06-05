@@ -20,7 +20,7 @@ phased ramp from backtest → paper → live micro → scale.
   else halt + alert. Drift = bug.
 - **Pre-trade liquidity check:** min open interest, max bid-ask spread.
   Don't get stuck in illiquid contracts.
-- **No new trades < 30 min before close.** End-of-day liquidity traps.
+- **No new trades < 5 min before close.** End-of-day liquidity traps.
 - **Earnings exclusion:** don't open positions with earnings before expiry.
 
 ## Architectural style

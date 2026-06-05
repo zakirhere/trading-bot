@@ -77,7 +77,7 @@ def test_position_count_cap():
 
 
 def test_near_close_blocks():
-    near_close = datetime(2026, 6, 5, 15, 45, tzinfo=ET)
+    near_close = datetime(2026, 6, 5, 15, 57, tzinfo=ET)
     rc = risk.check_pretrade(
         s=_state(),
         is_live=False,
