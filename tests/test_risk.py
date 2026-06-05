@@ -68,7 +68,7 @@ def test_position_count_cap():
         s=_state(),
         is_live=False,
         expected_notional_usd=100,
-        open_position_count=5,
+        open_position_count=20,
         open_risk_usd=0,
         now_et=MID_DAY,
     )

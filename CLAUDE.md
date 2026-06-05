@@ -11,7 +11,7 @@ phased ramp from backtest → paper → live micro → scale.
 - **Risk caps are hardcoded guardrails.** Config can only make them tighter, never looser:
   - Max risk per trade: $500
   - Max total open risk: $2,000
-  - Max concurrent positions: 5
+  - Max concurrent positions: 20
   - Daily loss limit: -2% of account → hard halt
 - **Every order needs an idempotency key:** `{strategy}_{symbol}_{date}_{intent_hash}`.
   Network retries must not double-fill.
