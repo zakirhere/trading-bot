@@ -8,9 +8,9 @@ import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
-from . import config, db, state, worker
+from . import config, db, nl, state, worker
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def _request_row(req: db.TradeRequest) -> str:
     return "<tr>" + "".join(f"<td>{field}</td>" for field in fields) + "</tr>"
 
 
-def render_dashboard(conn: sqlite3.Connection) -> str:
+def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) -> str:
     s = state.load()
     requests = db.list_requests(conn, limit=50)
     rows = "\n".join(_request_row(req) for req in requests)
@@ -55,6 +55,9 @@ def render_dashboard(conn: sqlite3.Connection) -> str:
     )
     halted = "halted" if s.halted else "running"
     halt_reason = html.escape(s.halt_reason or "")
+    message_html = ""
+    if message:
+        message_html = f'<div class="notice">{html.escape(message)}</div>'
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -128,6 +131,25 @@ def render_dashboard(conn: sqlite3.Connection) -> str:
     th, td {{ text-align: left; border-bottom: 1px solid var(--line); padding: 9px 8px; vertical-align: top; }}
     th {{ color: var(--muted); font-weight: 650; }}
     .tables {{ display: grid; gap: 18px; }}
+    .notice {{
+      margin-bottom: 18px;
+      padding: 11px 12px;
+      border: 1px solid #fedf89;
+      border-radius: 6px;
+      background: #fffaeb;
+      color: #7a2e0e;
+      font-weight: 650;
+    }}
+    textarea {{
+      width: 100%;
+      min-height: 92px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 14px;
+      font-family: inherit;
+      resize: vertical;
+    }}
     @media (max-width: 860px) {{
       .grid {{ grid-template-columns: 1fr; }}
       header {{ align-items: flex-start; gap: 8px; flex-direction: column; }}
@@ -141,7 +163,18 @@ def render_dashboard(conn: sqlite3.Connection) -> str:
     <div><span class="status">{halted}</span> {halt_reason}</div>
   </header>
   <main>
+    {message_html}
     <div class="grid">
+      <section>
+        <h2>Natural Language Order</h2>
+        <form method="post" action="/nl-trade-requests">
+          <label for="nl_text">Request</label>
+          <textarea id="nl_text" name="text" required>buy 1 AAPL at noon today</textarea>
+          <div class="button-row">
+            <button type="submit">Queue NL</button>
+          </div>
+        </form>
+      </section>
       <section>
         <h2>Queue Stock Order</h2>
         <form method="post" action="/trade-requests">
@@ -194,16 +227,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        message = query.get("message", [None])[-1]
         conn = db.connect()
         db.init(conn)
         try:
-            self._do_GET(parsed.path, conn)
+            self._do_GET(parsed.path, conn, message=message)
         finally:
             conn.close()
 
-    def _do_GET(self, path: str, conn: sqlite3.Connection) -> None:
+    def _do_GET(self, path: str, conn: sqlite3.Connection, *, message: str | None = None) -> None:
         if path == "/":
-            self._reply_html(render_dashboard(conn))
+            self._reply_html(render_dashboard(conn, message=message))
             return
         if path == "/api/status":
             s = state.load()
@@ -244,6 +279,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply_json(db.as_dict(req), code=201)
             else:
                 self._redirect("/")
+            return
+        if path in {"/nl-trade-requests", "/api/nl-trade-requests"}:
+            data = self._read_body()
+            try:
+                parsed = nl.parse_stock_buy(str(data.get("text", "")))
+                req = db.create_stock_market_buy(
+                    conn,
+                    symbol=parsed.symbol,
+                    qty=parsed.qty,
+                    run_at=parsed.run_at,
+                    dry_run=parsed.dry_run,
+                )
+            except nl.ParseError as exc:
+                if path.startswith("/api/"):
+                    self._reply_json({"error": str(exc)}, code=400)
+                else:
+                    self._redirect(f"/?message={quote(str(exc))}")
+                return
+            if path.startswith("/api/"):
+                self._reply_json(db.as_dict(req), code=201)
+            else:
+                self._redirect(f"/?message={quote(f'Queued request #{req.id}: {req.symbol} x {req.qty:g}')}")
             return
         if path == "/worker/run-once":
             worker.run_once(conn)
