@@ -29,6 +29,16 @@ class AlpacaConfig:
     mode: str
 
 
+@dataclass(frozen=True)
+class NotifyConfig:
+    provider: str
+    slack_webhook_url: str | None
+
+    @property
+    def enabled(self) -> bool:
+        return self.provider == "slack" and bool(self.slack_webhook_url)
+
+
 def _load_dotenv(path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     if not path.exists():
@@ -76,3 +86,20 @@ def load_alpaca_config(env_path: Path | None = None) -> AlpacaConfig:
         is_live=is_live,
         mode=mode,
     )
+
+
+def load_notify_config(env_path: Path | None = None) -> NotifyConfig:
+    if env_path is None:
+        env_path = PROJECT_ROOT / ".env"
+    file_env = _load_dotenv(env_path)
+    env = {**file_env, **os.environ}
+
+    provider = env.get("NOTIFY_PROVIDER", "").strip().lower()
+    webhook = env.get("SLACK_WEBHOOK_URL", "").strip()
+
+    if provider not in {"", "slack"}:
+        raise RuntimeError(f"unsupported NOTIFY_PROVIDER={provider!r}")
+    if webhook and not webhook.startswith("https://hooks.slack.com/"):
+        raise RuntimeError("SLACK_WEBHOOK_URL must start with https://hooks.slack.com/")
+
+    return NotifyConfig(provider=provider, slack_webhook_url=webhook or None)

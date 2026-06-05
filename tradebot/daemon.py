@@ -4,7 +4,7 @@ import argparse
 import logging
 import sys
 
-from . import broker, config, killswitch, signals, state
+from . import broker, config, killswitch, notify, signals, state
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -20,6 +20,13 @@ def cmd_halt(reason: str) -> int:
     with state.transaction() as s:
         s.halted = True
         s.halt_reason = reason
+    notify.send(
+        notify.Alert(
+            level="halt",
+            title="Bot halted",
+            message=reason,
+        )
+    )
     print(f"HALTED ({reason})")
     return 0
 
@@ -28,6 +35,13 @@ def cmd_resume() -> int:
     with state.transaction() as s:
         s.halted = False
         s.halt_reason = None
+    notify.send(
+        notify.Alert(
+            level="info",
+            title="Bot resumed",
+            message="New order submission is allowed again.",
+        )
+    )
     print("RESUMED")
     return 0
 
@@ -96,6 +110,18 @@ def cmd_run(*, dry_run: bool, no_server: bool, force_closed: bool) -> int:
         )
         if acct.get("trading_blocked") or acct.get("account_blocked"):
             log.error("trading_blocked or account_blocked — aborting")
+            notify.send(
+                notify.Alert(
+                    level="halt",
+                    title="Alpaca account blocked",
+                    message="Daemon aborted before signal execution.",
+                    fields={
+                        "account_number": acct.get("account_number"),
+                        "trading_blocked": acct.get("trading_blocked"),
+                        "account_blocked": acct.get("account_blocked"),
+                    },
+                )
+            )
             return 2
 
         clock = b.get_clock()
@@ -107,6 +133,17 @@ def cmd_run(*, dry_run: bool, no_server: bool, force_closed: bool) -> int:
         )
         if not clock.get("is_open") and not dry_run and not force_closed:
             log.warning("market not open — refusing to fire. Use --force-closed to override.")
+            notify.send(
+                notify.Alert(
+                    level="risk",
+                    title="Market closed",
+                    message="Daemon refused to submit orders because Alpaca clock is closed.",
+                    fields={
+                        "next_open": clock.get("next_open"),
+                        "next_close": clock.get("next_close"),
+                    },
+                )
+            )
             return 3
 
         if not no_server:
@@ -117,8 +154,15 @@ def cmd_run(*, dry_run: bool, no_server: bool, force_closed: bool) -> int:
         if result.order:
             log.info("order id=%s status=%s", result.order.broker_order_id, result.order.status)
         return 0
-    except Exception:
+    except Exception as exc:
         log.exception("daemon failed")
+        notify.send(
+            notify.Alert(
+                level="error",
+                title="Daemon failed",
+                message=str(exc),
+            )
+        )
         return 1
     finally:
         b.close()

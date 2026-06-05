@@ -13,6 +13,8 @@ def _clear_alpaca_env(monkeypatch):
         "ALPACA_BASE_URL",
         "TRADEBOT_LIVE",
         "TRADEBOT_CONFIRM_LIVE_ALPACA",
+        "NOTIFY_PROVIDER",
+        "SLACK_WEBHOOK_URL",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -84,3 +86,34 @@ def test_live_config_accepts_explicit_live_confirmation(tmp_path):
 
     assert cfg.mode == "live"
     assert cfg.is_live
+
+
+def test_notify_config_disabled_by_default(tmp_path):
+    cfg = config.load_notify_config(_env_file(tmp_path))
+
+    assert not cfg.enabled
+    assert cfg.provider == ""
+
+
+def test_notify_config_accepts_slack(tmp_path):
+    path = _env_file(
+        tmp_path,
+        NOTIFY_PROVIDER="slack",
+        SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T000/B000/abc",
+    )
+
+    cfg = config.load_notify_config(path)
+
+    assert cfg.enabled
+    assert cfg.provider == "slack"
+
+
+def test_notify_config_rejects_non_slack_webhook(tmp_path):
+    path = _env_file(
+        tmp_path,
+        NOTIFY_PROVIDER="slack",
+        SLACK_WEBHOOK_URL="https://example.com/not-slack",
+    )
+
+    with pytest.raises(RuntimeError, match="SLACK_WEBHOOK_URL"):
+        config.load_notify_config(path)

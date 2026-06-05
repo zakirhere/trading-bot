@@ -36,6 +36,23 @@ Rehearse the signal without submitting an order:
 The launchd job is also dry-run by default. A real paper order requires running
 the daemon without `--dry-run`.
 
+## Slack Notifications
+
+Slack alerts use an incoming webhook URL stored only in `.env`. Per Slack's
+incoming webhook docs, the webhook URL accepts a JSON payload with message text
+and posts to the channel chosen when the webhook is created.
+
+Create a Slack app in your personal workspace, enable Incoming Webhooks, add a
+webhook to a private channel such as `#tradebot-alerts`, then set:
+
+```bash
+NOTIFY_PROVIDER=slack
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+```
+
+Never commit the webhook URL. Notifications are skipped when these values are
+unset.
+
 ## Mac Mini Deployment
 
 Use the Mac mini as the always-on runner and keep this development machine as

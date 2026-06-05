@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from . import broker, idempotency, risk, state
+from . import broker, idempotency, notify, risk, state
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +27,14 @@ def nio_buy(b: broker.AlpacaBroker, *, dry_run: bool = False) -> SignalResult:
 
     s = state.load()
     if idempotency.is_processed(key, s.processed_keys):
+        notify.send(
+            notify.Alert(
+                level="info",
+                title="Signal skipped",
+                message="NIO plumbing signal already processed for this date.",
+                fields={"symbol": "NIO", "idempotency_key": key},
+            )
+        )
         return SignalResult(False, f"idempotency: {key} already processed")
 
     positions = b.get_positions()
@@ -42,10 +50,26 @@ def nio_buy(b: broker.AlpacaBroker, *, dry_run: bool = False) -> SignalResult:
     )
     if not rc.allowed:
         log.warning("risk gate blocked: %s", rc.reason)
+        notify.send(
+            notify.Alert(
+                level="risk",
+                title="Trade blocked",
+                message=rc.reason or "risk gate blocked",
+                fields={"symbol": "NIO", "qty": NIO_QTY, "dry_run": dry_run},
+            )
+        )
         return SignalResult(False, f"risk gate: {rc.reason}")
 
     if dry_run:
         log.info("DRY RUN — would submit market buy %d NIO key=%s", NIO_QTY, key)
+        notify.send(
+            notify.Alert(
+                level="info",
+                title="Dry-run signal",
+                message=f"Would submit market buy {NIO_QTY} NIO.",
+                fields={"symbol": "NIO", "qty": NIO_QTY, "idempotency_key": key},
+            )
+        )
         return SignalResult(False, "dry-run")
 
     log.info("submitting market buy %d NIO key=%s", NIO_QTY, key)
@@ -68,4 +92,18 @@ def nio_buy(b: broker.AlpacaBroker, *, dry_run: bool = False) -> SignalResult:
         )
 
     log.info("submitted: id=%s status=%s", result.broker_order_id, result.status)
+    notify.send(
+        notify.Alert(
+            level="trade",
+            title="Order submitted",
+            message=f"Submitted market buy {NIO_QTY} NIO.",
+            fields={
+                "symbol": "NIO",
+                "qty": NIO_QTY,
+                "status": result.status,
+                "broker_order_id": result.broker_order_id,
+                "idempotency_key": key,
+            },
+        )
+    )
     return SignalResult(True, "submitted", order=result)
