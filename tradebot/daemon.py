@@ -87,7 +87,14 @@ def cmd_account_check() -> int:
     return 0
 
 
-def cmd_run(*, dry_run: bool, no_server: bool, force_closed: bool) -> int:
+def cmd_run(
+    *,
+    dry_run: bool,
+    no_server: bool,
+    force_closed: bool,
+    symbol: str | None,
+    qty: float | None,
+) -> int:
     log = logging.getLogger("daemon")
 
     cfg = config.load_alpaca_config()
@@ -149,7 +156,12 @@ def cmd_run(*, dry_run: bool, no_server: bool, force_closed: bool) -> int:
         if not no_server:
             killswitch.start_in_thread()
 
-        result = signals.nio_buy(b, dry_run=dry_run)
+        if symbol is None and qty is None:
+            result = signals.nio_buy(b, dry_run=dry_run)
+        else:
+            if not symbol or qty is None:
+                raise RuntimeError("--symbol and --qty must be provided together")
+            result = signals.stock_buy(b, symbol=symbol, qty=qty, dry_run=dry_run)
         log.info("result fired=%s reason=%s", result.fired, result.reason)
         if result.order:
             log.info("order id=%s status=%s", result.order.broker_order_id, result.order.status)
@@ -182,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="do not start the killswitch HTTP server")
     p.add_argument("--force-closed", action="store_true",
                    help="proceed even if Alpaca clock reports market closed")
+    p.add_argument("--symbol", help="stock symbol for a plumbing market-buy signal")
+    p.add_argument("--qty", type=float, help="share quantity for --symbol")
     args = p.parse_args(argv)
 
     setup_logging()
@@ -195,7 +209,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.account_check:
         return cmd_account_check()
     return cmd_run(
-        dry_run=args.dry_run, no_server=args.no_server, force_closed=args.force_closed
+        dry_run=args.dry_run,
+        no_server=args.no_server,
+        force_closed=args.force_closed,
+        symbol=args.symbol,
+        qty=args.qty,
     )
 
 

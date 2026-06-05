@@ -12,6 +12,7 @@ STRATEGY = "plumbing_test"
 NIO_QTY = 10
 # Conservative upper bound on NIO price for risk-cap check (true price typically $4-10).
 NIO_PRICE_UPPER_BOUND = 30.0
+DEFAULT_PRICE_UPPER_BOUND = 500.0
 
 
 @dataclass
@@ -21,9 +22,17 @@ class SignalResult:
     order: broker.OrderResult | None = None
 
 
-def nio_buy(b: broker.AlpacaBroker, *, dry_run: bool = False) -> SignalResult:
-    intent = {"action": "buy", "symbol": "NIO", "qty": NIO_QTY, "type": "market"}
-    key = idempotency.make_key(STRATEGY, "NIO", intent)
+def stock_buy(
+    b: broker.AlpacaBroker,
+    *,
+    symbol: str,
+    qty: float,
+    dry_run: bool = False,
+    price_upper_bound: float = DEFAULT_PRICE_UPPER_BOUND,
+) -> SignalResult:
+    symbol = symbol.upper()
+    intent = {"action": "buy", "symbol": symbol, "qty": qty, "type": "market"}
+    key = idempotency.make_key(STRATEGY, symbol, intent)
 
     s = state.load()
     if idempotency.is_processed(key, s.processed_keys):
@@ -31,14 +40,14 @@ def nio_buy(b: broker.AlpacaBroker, *, dry_run: bool = False) -> SignalResult:
             notify.Alert(
                 level="info",
                 title="Signal skipped",
-                message="NIO plumbing signal already processed for this date.",
-                fields={"symbol": "NIO", "idempotency_key": key},
+                message=f"{symbol} plumbing signal already processed for this date.",
+                fields={"symbol": symbol, "idempotency_key": key},
             )
         )
         return SignalResult(False, f"idempotency: {key} already processed")
 
     positions = b.get_positions()
-    expected_notional = NIO_QTY * NIO_PRICE_UPPER_BOUND
+    expected_notional = qty * price_upper_bound
     open_risk = sum(abs(float(p.get("market_value", 0))) for p in positions)
 
     rc = risk.check_pretrade(
@@ -55,26 +64,26 @@ def nio_buy(b: broker.AlpacaBroker, *, dry_run: bool = False) -> SignalResult:
                 level="risk",
                 title="Trade blocked",
                 message=rc.reason or "risk gate blocked",
-                fields={"symbol": "NIO", "qty": NIO_QTY, "dry_run": dry_run},
+                fields={"symbol": symbol, "qty": qty, "dry_run": dry_run},
             )
         )
         return SignalResult(False, f"risk gate: {rc.reason}")
 
     if dry_run:
-        log.info("DRY RUN — would submit market buy %d NIO key=%s", NIO_QTY, key)
+        log.info("DRY RUN — would submit market buy %s %s key=%s", qty, symbol, key)
         notify.send(
             notify.Alert(
                 level="info",
                 title="Dry-run signal",
-                message=f"Would submit market buy {NIO_QTY} NIO.",
-                fields={"symbol": "NIO", "qty": NIO_QTY, "idempotency_key": key},
+                message=f"Would submit market buy {qty:g} {symbol}.",
+                fields={"symbol": symbol, "qty": qty, "idempotency_key": key},
             )
         )
         return SignalResult(False, "dry-run")
 
-    log.info("submitting market buy %d NIO key=%s", NIO_QTY, key)
+    log.info("submitting market buy %s %s key=%s", qty, symbol, key)
     result = b.submit_market_order(
-        symbol="NIO", qty=NIO_QTY, side="buy", client_order_id=key
+        symbol=symbol, qty=qty, side="buy", client_order_id=key
     )
 
     with state.transaction() as st:
@@ -83,9 +92,9 @@ def nio_buy(b: broker.AlpacaBroker, *, dry_run: bool = False) -> SignalResult:
             state.OrderRecord(
                 idempotency_key=key,
                 broker_order_id=result.broker_order_id,
-                symbol="NIO",
+                symbol=symbol,
                 side="buy",
-                qty=NIO_QTY,
+                qty=qty,
                 submitted_at=datetime.now(timezone.utc).isoformat(),
                 status=result.status,
             )
@@ -93,17 +102,27 @@ def nio_buy(b: broker.AlpacaBroker, *, dry_run: bool = False) -> SignalResult:
 
     log.info("submitted: id=%s status=%s", result.broker_order_id, result.status)
     notify.send(
-        notify.Alert(
-            level="trade",
-            title="Order submitted",
-            message=f"Submitted market buy {NIO_QTY} NIO.",
-            fields={
-                "symbol": "NIO",
-                "qty": NIO_QTY,
-                "status": result.status,
-                "broker_order_id": result.broker_order_id,
-                "idempotency_key": key,
+            notify.Alert(
+                level="trade",
+                title="Order submitted",
+                message=f"Submitted market buy {qty:g} {symbol}.",
+                fields={
+                    "symbol": symbol,
+                    "qty": qty,
+                    "status": result.status,
+                    "broker_order_id": result.broker_order_id,
+                    "idempotency_key": key,
             },
         )
     )
     return SignalResult(True, "submitted", order=result)
+
+
+def nio_buy(b: broker.AlpacaBroker, *, dry_run: bool = False) -> SignalResult:
+    return stock_buy(
+        b,
+        symbol="NIO",
+        qty=NIO_QTY,
+        dry_run=dry_run,
+        price_upper_bound=NIO_PRICE_UPPER_BOUND,
+    )
