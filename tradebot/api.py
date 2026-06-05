@@ -25,17 +25,18 @@ def _parse_run_at(value: str | None) -> str | None:
 
 
 def _request_row(req: db.TradeRequest) -> str:
-    fields = [
-        req.id,
-        html.escape(req.status),
+    status = html.escape(req.status)
+    cells = [
+        str(req.id),
+        f'<span class="chip status-{status}">{status}</span>',
         html.escape(req.kind),
-        html.escape(req.symbol),
+        f'<strong>{html.escape(req.symbol)}</strong>',
         f"{req.qty:g}",
         html.escape(req.run_at or ""),
         html.escape(req.reason or ""),
-        html.escape(req.broker_order_id or ""),
+        f'<span class="mono">{html.escape(req.broker_order_id or "")}</span>',
     ]
-    return "<tr>" + "".join(f"<td>{field}</td>" for field in fields) + "</tr>"
+    return "<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
 
 
 def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) -> str:
@@ -45,11 +46,11 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
     orders = "\n".join(
         "<tr>"
         f"<td>{html.escape(o.submitted_at)}</td>"
-        f"<td>{html.escape(o.symbol)}</td>"
+        f"<td><strong>{html.escape(o.symbol)}</strong></td>"
         f"<td>{html.escape(o.side)}</td>"
         f"<td>{o.qty:g}</td>"
-        f"<td>{html.escape(o.status)}</td>"
-        f"<td>{html.escape(o.broker_order_id or '')}</td>"
+        f'<td><span class="chip status-{html.escape(o.status)}">{html.escape(o.status)}</span></td>'
+        f'<td><span class="mono">{html.escape(o.broker_order_id or "")}</span></td>'
         "</tr>"
         for o in reversed(s.orders[-20:])
     )
@@ -72,7 +73,9 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       --text: #1f2933;
       --muted: #667085;
       --line: #d9dee7;
-      --accent: #2563eb;
+      --accent: #3157d5;
+      --accent-2: #00a884;
+      --accent-3: #f59e0b;
       --danger: #b42318;
       --ok: #027a48;
     }}
@@ -80,27 +83,39 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
     body {{
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--bg);
+      background:
+        linear-gradient(135deg, rgba(49, 87, 213, .10), rgba(0, 168, 132, .08) 38%, rgba(245, 158, 11, .10)),
+        var(--bg);
       color: var(--text);
     }}
     header {{
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 18px 24px;
+      padding: 20px 28px;
       border-bottom: 1px solid var(--line);
-      background: var(--panel);
+      background: linear-gradient(90deg, #111827, #1e3a8a 55%, #047857);
+      color: #fff;
     }}
-    main {{ max-width: 1180px; margin: 0 auto; padding: 22px; }}
+    main {{ max-width: 1280px; margin: 0 auto; padding: 24px; }}
     h1 {{ font-size: 22px; margin: 0; }}
     h2 {{ font-size: 16px; margin: 0 0 14px; }}
-    .status {{ color: {"var(--danger)" if s.halted else "var(--ok)"}; font-weight: 700; }}
-    .grid {{ display: grid; grid-template-columns: 360px 1fr; gap: 18px; align-items: start; }}
+    .status {{
+      display: inline-block;
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: {"#fee4e2" if s.halted else "#dcfae6"};
+      color: {"var(--danger)" if s.halted else "var(--ok)"};
+      font-weight: 800;
+    }}
+    .grid {{ display: grid; grid-template-columns: 420px 1fr; gap: 20px; align-items: start; }}
+    .left-stack {{ display: grid; gap: 16px; }}
     section {{
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 16px;
+      padding: 18px;
+      box-shadow: 0 10px 24px rgba(31, 41, 51, .06);
     }}
     label {{ display: block; color: var(--muted); font-size: 13px; margin: 12px 0 6px; }}
     input, select {{
@@ -120,17 +135,61 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       padding: 8px 12px;
       font-size: 14px;
       font-weight: 650;
-      background: var(--accent);
+      background: linear-gradient(135deg, var(--accent), #4f46e5);
       color: white;
       cursor: pointer;
     }}
     .button-row {{ display: flex; gap: 10px; margin-top: 14px; }}
-    .secondary {{ background: #475467; }}
-    .danger {{ background: var(--danger); }}
+    .secondary {{ background: linear-gradient(135deg, #475467, #344054); }}
+    .danger {{ background: linear-gradient(135deg, var(--danger), #7a271a); }}
     table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
     th, td {{ text-align: left; border-bottom: 1px solid var(--line); padding: 9px 8px; vertical-align: top; }}
     th {{ color: var(--muted); font-weight: 650; }}
     .tables {{ display: grid; gap: 18px; }}
+    .console {{
+      border-color: rgba(49, 87, 213, .28);
+      background: linear-gradient(180deg, #ffffff, #f7f9ff);
+    }}
+    .quick-examples {{
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .example {{
+      border-left: 3px solid var(--accent-2);
+      padding: 7px 9px;
+      background: #ecfdf3;
+      border-radius: 4px;
+      color: #05603a;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }}
+    .chip {{
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 750;
+      background: #eef4ff;
+      color: #3538cd;
+    }}
+    .status-filled, .status-submitted {{ background: #dcfae6; color: #027a48; }}
+    .status-queued {{ background: #fef0c7; color: #b54708; }}
+    .status-blocked, .status-error {{ background: #fee4e2; color: #b42318; }}
+    .status-dry_run {{ background: #f4ebff; color: #6941c6; }}
+    .mono {{
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      color: #475467;
+    }}
+    .actions {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }}
+    .actions form, .actions button {{ width: 100%; }}
     .notice {{
       margin-bottom: 18px;
       padding: 11px 12px;
@@ -142,7 +201,7 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
     }}
     textarea {{
       width: 100%;
-      min-height: 92px;
+      min-height: 130px;
       border: 1px solid var(--line);
       border-radius: 6px;
       padding: 8px 10px;
@@ -165,40 +224,31 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
   <main>
     {message_html}
     <div class="grid">
-      <section>
-        <h2>Natural Language Order</h2>
-        <form method="post" action="/nl-trade-requests">
-          <label for="nl_text">Request</label>
-          <textarea id="nl_text" name="text" required>buy 1 AAPL at noon today</textarea>
-          <div class="button-row">
-            <button type="submit">Queue NL</button>
+      <div class="left-stack">
+        <section class="console">
+          <h2>Natural Language Order</h2>
+          <form method="post" action="/nl-trade-requests">
+            <label for="nl_text">Request</label>
+            <textarea id="nl_text" name="text" required>buy 1 AAPL at noon today</textarea>
+            <div class="button-row">
+              <button type="submit">Queue Order</button>
+            </div>
+          </form>
+          <div class="quick-examples">
+            <div class="example">buy 1 AAPL now</div>
+            <div class="example">dry run buy 2 MSFT tomorrow at 12:30 PM</div>
+            <div class="example">buy 1 TSLA at market open tomorrow</div>
           </div>
-        </form>
-      </section>
-      <section>
-        <h2>Queue Stock Order</h2>
-        <form method="post" action="/trade-requests">
-          <label for="symbol">Symbol</label>
-          <input id="symbol" name="symbol" value="AAPL" required>
-          <label for="qty">Quantity</label>
-          <input id="qty" name="qty" type="number" min="0.0001" step="0.0001" value="1" required>
-          <label for="run_at">Run At</label>
-          <input id="run_at" name="run_at" type="datetime-local">
-          <label for="dry_run">Mode</label>
-          <select id="dry_run" name="dry_run">
-            <option value="0">Paper submit</option>
-            <option value="1">Dry run</option>
-          </select>
-          <div class="button-row">
-            <button type="submit">Queue</button>
-            <button class="secondary" type="submit" formaction="/worker/run-once">Run Due</button>
+        </section>
+        <section>
+          <h2>Controls</h2>
+          <div class="actions">
+            <form method="post" action="/worker/run-once"><button class="secondary" type="submit">Run Due</button></form>
+            <form method="post" action="/halt"><button class="danger" type="submit">Halt</button></form>
+            <form method="post" action="/resume"><button class="secondary" type="submit">Resume</button></form>
           </div>
-        </form>
-        <div class="button-row">
-          <form method="post" action="/halt"><button class="danger" type="submit">Halt</button></form>
-          <form method="post" action="/resume"><button class="secondary" type="submit">Resume</button></form>
-        </div>
-      </section>
+        </section>
+      </div>
       <div class="tables">
         <section>
           <h2>Trade Requests</h2>
