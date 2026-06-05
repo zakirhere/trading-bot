@@ -50,8 +50,7 @@ def cmd_account_check() -> int:
     finally:
         b.close()
 
-    mode = "LIVE" if cfg.is_live else "PAPER"
-    print(f"mode={mode} base_url={cfg.base_url}")
+    print(f"mode={cfg.mode.upper()} base_url={cfg.base_url}")
     print(
         "account="
         f"{acct.get('account_number')} "
@@ -79,7 +78,8 @@ def cmd_run(*, dry_run: bool, no_server: bool, force_closed: bool) -> int:
 
     cfg = config.load_alpaca_config()
     log.info(
-        "config loaded: base_url=%s live=%s dry_run=%s",
+        "config loaded: mode=%s base_url=%s live=%s dry_run=%s",
+        cfg.mode,
         cfg.base_url,
         cfg.is_live,
         dry_run,

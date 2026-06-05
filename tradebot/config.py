@@ -26,6 +26,7 @@ class AlpacaConfig:
     secret_key: str
     base_url: str
     is_live: bool
+    mode: str
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -50,15 +51,28 @@ def load_alpaca_config(env_path: Path | None = None) -> AlpacaConfig:
     key_id = env.get("ALPACA_API_KEY_ID", "")
     secret = env.get("ALPACA_API_SECRET_KEY", "")
     base_url = env.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets").rstrip("/")
-    is_live = env.get("TRADEBOT_LIVE", "0") == "1"
+    live_value = env.get("TRADEBOT_LIVE", "0")
+    is_live = live_value == "1"
+    confirm_live = env.get("TRADEBOT_CONFIRM_LIVE_ALPACA", "")
 
     if not key_id or not secret or "PASTE" in key_id or "PASTE" in secret:
         raise RuntimeError(f"Alpaca credentials missing or unset in {env_path}")
 
     # Hard fence: refuse mismatched live flag and base URL.
-    if is_live and "paper" in base_url:
-        raise RuntimeError("TRADEBOT_LIVE=1 but base_url points at paper — config inconsistent")
-    if not is_live and "paper" not in base_url:
+    if live_value not in {"0", "1"}:
+        raise RuntimeError("TRADEBOT_LIVE must be exactly 0 or 1")
+    if is_live and base_url != "https://api.alpaca.markets":
+        raise RuntimeError("TRADEBOT_LIVE=1 requires ALPACA_BASE_URL=https://api.alpaca.markets")
+    if is_live and confirm_live != "I_UNDERSTAND_THIS_USES_REAL_MONEY":
+        raise RuntimeError("live Alpaca trading requires TRADEBOT_CONFIRM_LIVE_ALPACA")
+    if not is_live and base_url != "https://paper-api.alpaca.markets":
         raise RuntimeError(f"TRADEBOT_LIVE=0 but base_url points at live ({base_url}) — refusing")
 
-    return AlpacaConfig(key_id=key_id, secret_key=secret, base_url=base_url, is_live=is_live)
+    mode = "live" if is_live else "paper"
+    return AlpacaConfig(
+        key_id=key_id,
+        secret_key=secret,
+        base_url=base_url,
+        is_live=is_live,
+        mode=mode,
+    )
