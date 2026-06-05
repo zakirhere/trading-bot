@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the market-open launchd job for one-shot fire today (6:30 AM PDT = 9:30 ET).
+# Install the market-open launchd job for one-shot dry-run today (6:30 AM PDT = 9:30 ET).
 # Calendar interval is pinned to Month=6 Day=5 so it only matches June 5 of any year —
 # effectively one-shot for our purposes.
 set -euo pipefail
@@ -27,5 +27,8 @@ echo "Logs:"
 echo "  stdout: ${HOME}/.tradebot/launchd-stdout.log"
 echo "  stderr: ${HOME}/.tradebot/launchd-stderr.log"
 echo
+echo "This scheduled job is DRY-RUN only; it will not submit an order."
+echo "Account check:       ${PROJECT_ROOT}/.venv/bin/python -m tradebot.daemon --account-check"
 echo "Halt before fire:    ${PROJECT_ROOT}/.venv/bin/python -m tradebot.daemon --halt 'reason'"
+echo "Manual paper order:  ${PROJECT_ROOT}/.venv/bin/python -m tradebot.daemon --no-server"
 echo "Uninstall:           ${PROJECT_ROOT}/scripts/uninstall-launchd.sh"

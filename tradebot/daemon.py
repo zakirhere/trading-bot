@@ -41,6 +41,39 @@ def cmd_status() -> int:
     return 0
 
 
+def cmd_account_check() -> int:
+    cfg = config.load_alpaca_config()
+    b = broker.AlpacaBroker(cfg)
+    try:
+        acct = b.get_account()
+        clock = b.get_clock()
+    finally:
+        b.close()
+
+    mode = "LIVE" if cfg.is_live else "PAPER"
+    print(f"mode={mode} base_url={cfg.base_url}")
+    print(
+        "account="
+        f"{acct.get('account_number')} "
+        f"status={acct.get('status')} "
+        f"trading_blocked={acct.get('trading_blocked')} "
+        f"account_blocked={acct.get('account_blocked')}"
+    )
+    print(
+        "balances="
+        f"buying_power={acct.get('buying_power')} "
+        f"cash={acct.get('cash')} "
+        f"portfolio_value={acct.get('portfolio_value')}"
+    )
+    print(
+        "clock="
+        f"is_open={clock.get('is_open')} "
+        f"next_open={clock.get('next_open')} "
+        f"next_close={clock.get('next_close')}"
+    )
+    return 0
+
+
 def cmd_run(*, dry_run: bool, no_server: bool, force_closed: bool) -> int:
     log = logging.getLogger("daemon")
 
@@ -97,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="set halted=true in state and exit")
     p.add_argument("--resume", action="store_true", help="set halted=false in state and exit")
     p.add_argument("--status", action="store_true", help="print state and exit")
+    p.add_argument("--account-check", action="store_true",
+                   help="check Alpaca account and market clock without running signals")
     p.add_argument("--dry-run", action="store_true",
                    help="run signal logic without submitting real orders")
     p.add_argument("--no-server", action="store_true",
@@ -113,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_resume()
     if args.status:
         return cmd_status()
+    if args.account_check:
+        return cmd_account_check()
     return cmd_run(
         dry_run=args.dry_run, no_server=args.no_server, force_closed=args.force_closed
     )

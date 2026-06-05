@@ -19,6 +19,7 @@
         <string>/Users/zsayed/personal/trading-bot/.venv/bin/python</string>
         <string>-m</string>
         <string>tradebot.daemon</string>
+        <string>--dry-run</string>
         <string>--no-server</string>
     </array>
 
