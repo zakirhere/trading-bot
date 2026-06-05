@@ -67,24 +67,26 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
   <title>Tradebot</title>
   <style>
     :root {{
-      color-scheme: light;
-      --bg: #f6f7f8;
-      --panel: #ffffff;
-      --text: #1f2933;
-      --muted: #667085;
-      --line: #d9dee7;
-      --accent: #3157d5;
-      --accent-2: #00a884;
-      --accent-3: #f59e0b;
-      --danger: #b42318;
-      --ok: #027a48;
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #121a2b;
+      --panel-2: #0f1726;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --line: #263247;
+      --accent: #60a5fa;
+      --accent-2: #34d399;
+      --accent-3: #fbbf24;
+      --danger: #f87171;
+      --ok: #34d399;
     }}
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       background:
-        linear-gradient(135deg, rgba(49, 87, 213, .10), rgba(0, 168, 132, .08) 38%, rgba(245, 158, 11, .10)),
+        radial-gradient(circle at 18% 8%, rgba(96, 165, 250, .14), transparent 30%),
+        radial-gradient(circle at 92% 16%, rgba(52, 211, 153, .10), transparent 34%),
         var(--bg);
       color: var(--text);
     }}
@@ -94,7 +96,7 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       justify-content: space-between;
       padding: 20px 28px;
       border-bottom: 1px solid var(--line);
-      background: linear-gradient(90deg, #111827, #1e3a8a 55%, #047857);
+      background: linear-gradient(90deg, #090d18, #111b34 58%, #0f2c2b);
       color: #fff;
     }}
     main {{ max-width: 1280px; margin: 0 auto; padding: 24px; }}
@@ -104,7 +106,7 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       display: inline-block;
       border-radius: 999px;
       padding: 6px 10px;
-      background: {"#fee4e2" if s.halted else "#dcfae6"};
+      background: {"rgba(248, 113, 113, .16)" if s.halted else "rgba(52, 211, 153, .16)"};
       color: {"var(--danger)" if s.halted else "var(--ok)"};
       font-weight: 800;
     }}
@@ -115,7 +117,7 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 18px;
-      box-shadow: 0 10px 24px rgba(31, 41, 51, .06);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, .24);
     }}
     label {{ display: block; color: var(--muted); font-size: 13px; margin: 12px 0 6px; }}
     input, select {{
@@ -125,7 +127,7 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       border-radius: 6px;
       padding: 8px 10px;
       font-size: 14px;
-      background: #fff;
+      background: var(--panel-2);
       color: var(--text);
     }}
     button {{
@@ -135,20 +137,20 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       padding: 8px 12px;
       font-size: 14px;
       font-weight: 650;
-      background: linear-gradient(135deg, var(--accent), #4f46e5);
+      background: linear-gradient(135deg, #2563eb, #4f46e5);
       color: white;
       cursor: pointer;
     }}
     .button-row {{ display: flex; gap: 10px; margin-top: 14px; }}
-    .secondary {{ background: linear-gradient(135deg, #475467, #344054); }}
-    .danger {{ background: linear-gradient(135deg, var(--danger), #7a271a); }}
+    .secondary {{ background: linear-gradient(135deg, #334155, #1f2937); }}
+    .danger {{ background: linear-gradient(135deg, #dc2626, #7f1d1d); }}
     table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
     th, td {{ text-align: left; border-bottom: 1px solid var(--line); padding: 9px 8px; vertical-align: top; }}
     th {{ color: var(--muted); font-weight: 650; }}
     .tables {{ display: grid; gap: 18px; }}
     .console {{
-      border-color: rgba(49, 87, 213, .28);
-      background: linear-gradient(180deg, #ffffff, #f7f9ff);
+      border-color: rgba(96, 165, 250, .32);
+      background: linear-gradient(180deg, #131f35, #101827);
     }}
     .quick-examples {{
       display: grid;
@@ -160,9 +162,9 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
     .example {{
       border-left: 3px solid var(--accent-2);
       padding: 7px 9px;
-      background: #ecfdf3;
+      background: rgba(52, 211, 153, .10);
       border-radius: 4px;
-      color: #05603a;
+      color: #a7f3d0;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }}
     .chip {{
@@ -171,18 +173,18 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       padding: 3px 8px;
       font-size: 12px;
       font-weight: 750;
-      background: #eef4ff;
-      color: #3538cd;
+      background: rgba(96, 165, 250, .16);
+      color: #bfdbfe;
     }}
-    .status-filled, .status-submitted {{ background: #dcfae6; color: #027a48; }}
-    .status-queued {{ background: #fef0c7; color: #b54708; }}
-    .status-blocked, .status-error {{ background: #fee4e2; color: #b42318; }}
-    .status-dry_run {{ background: #f4ebff; color: #6941c6; }}
+    .status-filled, .status-submitted {{ background: rgba(52, 211, 153, .16); color: #86efac; }}
+    .status-queued {{ background: rgba(251, 191, 36, .16); color: #fde68a; }}
+    .status-blocked, .status-error {{ background: rgba(248, 113, 113, .18); color: #fca5a5; }}
+    .status-dry_run {{ background: rgba(167, 139, 250, .18); color: #ddd6fe; }}
     .mono {{
       overflow-wrap: anywhere;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 12px;
-      color: #475467;
+      color: #cbd5e1;
     }}
     .actions {{
       display: grid;
@@ -193,10 +195,10 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
     .notice {{
       margin-bottom: 18px;
       padding: 11px 12px;
-      border: 1px solid #fedf89;
+      border: 1px solid rgba(251, 191, 36, .36);
       border-radius: 6px;
-      background: #fffaeb;
-      color: #7a2e0e;
+      background: rgba(251, 191, 36, .12);
+      color: #fde68a;
       font-weight: 650;
     }}
     textarea {{
@@ -207,6 +209,8 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       padding: 8px 10px;
       font-size: 14px;
       font-family: inherit;
+      background: var(--panel-2);
+      color: var(--text);
       resize: vertical;
     }}
     @media (max-width: 860px) {{
