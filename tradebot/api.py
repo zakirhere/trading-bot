@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import html
+import hashlib
+import hmac
 import json
 import logging
 import sqlite3
@@ -13,6 +15,7 @@ from urllib.parse import parse_qs, quote, urlparse
 from . import config, db, nl, state, worker
 
 log = logging.getLogger(__name__)
+COOKIE_NAME = "tradebot_session"
 
 
 def _parse_run_at(value: str | None) -> str | None:
@@ -22,6 +25,100 @@ def _parse_run_at(value: str | None) -> str | None:
     if dt.tzinfo is None:
         dt = dt.astimezone()
     return dt.astimezone(timezone.utc).isoformat()
+
+
+def _session_value(token: str) -> str:
+    return hashlib.sha256(f"tradebot:{token}".encode()).hexdigest()
+
+
+def _cookie_value(cookie_header: str | None, name: str) -> str | None:
+    if not cookie_header:
+        return None
+    for part in cookie_header.split(";"):
+        if "=" not in part:
+            continue
+        k, v = part.strip().split("=", 1)
+        if k == name:
+            return v
+    return None
+
+
+def render_login(*, message: str | None = None) -> str:
+    message_html = ""
+    if message:
+        message_html = f'<div class="notice">{html.escape(message)}</div>'
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tradebot Login</title>
+  <style>
+    :root {{ color-scheme: dark; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0b1020;
+      color: #e5e7eb;
+    }}
+    main {{
+      width: min(420px, calc(100vw - 32px));
+      border: 1px solid #263247;
+      border-radius: 8px;
+      background: #121a2b;
+      padding: 22px;
+      box-shadow: 0 18px 44px rgba(0, 0, 0, .35);
+    }}
+    h1 {{ margin: 0 0 16px; font-size: 22px; }}
+    label {{ display: block; color: #94a3b8; font-size: 13px; margin-bottom: 6px; }}
+    input {{
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid #263247;
+      border-radius: 6px;
+      background: #0f1726;
+      color: #e5e7eb;
+      padding: 8px 10px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }}
+    button {{
+      width: 100%;
+      margin-top: 14px;
+      min-height: 42px;
+      border: 0;
+      border-radius: 6px;
+      background: linear-gradient(135deg, #2563eb, #4f46e5);
+      color: #fff;
+      font-weight: 750;
+      cursor: pointer;
+    }}
+    .notice {{
+      margin-bottom: 14px;
+      padding: 10px 11px;
+      border: 1px solid rgba(248, 113, 113, .42);
+      border-radius: 6px;
+      background: rgba(248, 113, 113, .13);
+      color: #fca5a5;
+      font-weight: 650;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tradebot Login</h1>
+    {message_html}
+    <form method="post" action="/login">
+      <label for="token">Dashboard token</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" autofocus required>
+      <button type="submit">Unlock Dashboard</button>
+    </form>
+  </main>
+</body>
+</html>"""
 
 
 def _request_row(req: db.TradeRequest) -> str:
@@ -283,6 +380,15 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         message = query.get("message", [None])[-1]
+        if parsed.path == "/login":
+            self._reply_html(render_login(message=message))
+            return
+        if not self._is_authorized():
+            if parsed.path.startswith("/api/"):
+                self._reply_json({"error": "unauthorized"}, code=401)
+            else:
+                self._redirect("/login")
+            return
         conn = db.connect()
         db.init(conn)
         try:
@@ -312,6 +418,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/login":
+            data = self._read_body()
+            cfg = config.load_dashboard_auth_config()
+            token = str(data.get("token", ""))
+            if hmac.compare_digest(token, cfg.token):
+                self.send_response(303)
+                self.send_header("Location", "/")
+                self.send_header(
+                    "Set-Cookie",
+                    f"{COOKIE_NAME}={_session_value(cfg.token)}; Path=/; HttpOnly; SameSite=Strict",
+                )
+                self.end_headers()
+            else:
+                self._redirect("/login?message=Invalid%20token")
+            return
+        if not self._is_authorized():
+            if parsed.path.startswith("/api/"):
+                self._reply_json({"error": "unauthorized"}, code=401)
+            else:
+                self._redirect("/login")
+            return
         conn = db.connect()
         db.init(conn)
         try:
@@ -373,6 +500,19 @@ class Handler(BaseHTTPRequestHandler):
             self._redirect_or_json(path, {"halted": False})
             return
         self._reply_json({"error": "not found"}, code=404)
+
+    def _is_authorized(self) -> bool:
+        cfg = config.load_dashboard_auth_config()
+        expected_session = _session_value(cfg.token)
+        cookie_session = _cookie_value(self.headers.get("Cookie"), COOKIE_NAME)
+        if cookie_session and hmac.compare_digest(cookie_session, expected_session):
+            return True
+        auth = self.headers.get("Authorization", "")
+        prefix = "Bearer "
+        if auth.startswith(prefix):
+            supplied = auth[len(prefix):].strip()
+            return hmac.compare_digest(supplied, cfg.token)
+        return False
 
     def _read_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))

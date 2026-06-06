@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = Path.home() / ".tradebot"
 STATE_FILE = STATE_DIR / "state.json"
 DB_FILE = STATE_DIR / "tradebot.sqlite"
+DASHBOARD_TOKEN_FILE = STATE_DIR / "dashboard_token"
 
 KILLSWITCH_HOST = "127.0.0.1"
 KILLSWITCH_PORT = 8765
@@ -41,6 +43,12 @@ class NotifyConfig:
     @property
     def enabled(self) -> bool:
         return self.provider == "slack" and bool(self.slack_webhook_url)
+
+
+@dataclass(frozen=True)
+class DashboardAuthConfig:
+    token: str
+    source: str
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -107,3 +115,27 @@ def load_notify_config(env_path: Path | None = None) -> NotifyConfig:
         raise RuntimeError("SLACK_WEBHOOK_URL must start with https://hooks.slack.com/")
 
     return NotifyConfig(provider=provider, slack_webhook_url=webhook or None)
+
+
+def load_dashboard_auth_config(env_path: Path | None = None) -> DashboardAuthConfig:
+    if env_path is None:
+        env_path = PROJECT_ROOT / ".env"
+    file_env = _load_dotenv(env_path)
+    env = {**file_env, **os.environ}
+
+    token = env.get("DASHBOARD_TOKEN", "").strip()
+    if token:
+        if len(token) < 16:
+            raise RuntimeError("DASHBOARD_TOKEN must be at least 16 characters")
+        return DashboardAuthConfig(token=token, source="env")
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if DASHBOARD_TOKEN_FILE.exists():
+        token = DASHBOARD_TOKEN_FILE.read_text().strip()
+        if token:
+            return DashboardAuthConfig(token=token, source=str(DASHBOARD_TOKEN_FILE))
+
+    token = secrets.token_urlsafe(32)
+    DASHBOARD_TOKEN_FILE.write_text(token + "\n")
+    DASHBOARD_TOKEN_FILE.chmod(0o600)
+    return DashboardAuthConfig(token=token, source=str(DASHBOARD_TOKEN_FILE))

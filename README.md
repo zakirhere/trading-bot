@@ -53,10 +53,24 @@ Open the dashboard:
 http://127.0.0.1:8787
 ```
 
+The dashboard requires a token. If `DASHBOARD_TOKEN` is not set in `.env`, the
+service generates one locally:
+
+```bash
+cat ~/.tradebot/dashboard_token
+```
+
+You can also set your own token in `.env`:
+
+```bash
+DASHBOARD_TOKEN=replace-with-a-long-random-token
+```
+
 Queue a stock market buy through the API:
 
 ```bash
 curl -X POST http://127.0.0.1:8787/api/trade-requests \
+  -H "Authorization: Bearer $(cat ~/.tradebot/dashboard_token)" \
   -H 'Content-Type: application/json' \
   -d '{"symbol":"AAPL","qty":1,"run_at":"2026-06-05T12:00:00-07:00"}'
 ```
