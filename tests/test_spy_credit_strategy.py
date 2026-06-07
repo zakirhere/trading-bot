@@ -123,6 +123,60 @@ class DuplicateSpreadData:
         }
 
 
+class IncomeStrategyData:
+    def stock_bars(self, *, symbol, start, end, timeframe):
+        assert symbol == "SPY"
+        if timeframe == "1Day":
+            return [{"t": "2026-06-04T04:00:00Z", "c": 757.09}]
+        return [
+            {"t": "2026-06-05T13:30:00Z", "c": 750.00},
+            {"t": "2026-06-05T14:30:00Z", "c": 749.00},
+            {"t": "2026-06-05T15:30:00Z", "c": 748.00},
+            {"t": "2026-06-05T19:59:00Z", "c": 740.00},
+        ]
+
+    def option_contracts(self, *, underlying, expiration_gte, expiration_lte, option_type):
+        assert underlying == "SPY"
+        if expiration_gte != expiration_lte:
+            return [
+                strategy.OptionContract("EXPIRY_MARKER", date(2026, 6, 26), Decimal("700"), "put"),
+            ]
+        if option_type == "call":
+            return [
+                strategy.OptionContract("CALL_SHORT", expiration_gte, Decimal("700"), option_type),
+                strategy.OptionContract("CALL_LONG", expiration_gte, Decimal("701"), option_type),
+            ]
+        return [
+            strategy.OptionContract("PUT_SHORT", expiration_gte, Decimal("700"), option_type),
+            strategy.OptionContract("PUT_LONG", expiration_gte, Decimal("699"), option_type),
+        ]
+
+    def option_bars(self, *, symbols, start, end):
+        if "CALL_SHORT" in symbols:
+            return {
+                "CALL_SHORT": [
+                    {"t": "2026-06-05T14:30:00Z", "c": 1.00},
+                    {"t": "2026-06-05T15:30:00Z", "c": 0.70},
+                    {"t": "2026-06-05T19:59:00Z", "c": 0.72},
+                ],
+                "CALL_LONG": [
+                    {"t": "2026-06-05T14:30:00Z", "c": 0.40},
+                    {"t": "2026-06-05T15:30:00Z", "c": 0.40},
+                    {"t": "2026-06-05T19:59:00Z", "c": 0.43},
+                ],
+            }
+        return {
+            "PUT_SHORT": [
+                {"t": "2026-06-05T14:30:00Z", "c": 1.00},
+                {"t": "2026-06-05T19:59:00Z", "c": 1.00},
+            ],
+            "PUT_LONG": [
+                {"t": "2026-06-05T14:30:00Z", "c": 0.10},
+                {"t": "2026-06-05T19:59:00Z", "c": 0.10},
+            ],
+        }
+
+
 def test_find_best_candidate_rejects_25_credit_and_accepts_21():
     data = FakeData()
     entry_time = datetime(2026, 6, 5, 10, 30, tzinfo=ET)
@@ -209,3 +263,26 @@ def test_latest_spread_credit_requires_same_timestamp_for_both_legs():
     )
 
     assert credit == Decimal("0.21")
+
+
+def test_income_backtest_closes_at_50_percent_profit_target():
+    result = strategy.run_income_backtest_for_date(
+        trading_date=date(2026, 6, 5),
+        data=IncomeStrategyData(),
+        seed=1,
+        entries_per_day=1,
+    )
+
+    entry = result.entries[0]
+
+    assert result.trades_found == 1
+    assert entry.candidate is not None
+    assert entry.candidate.direction == "call_credit"
+    assert entry.candidate.credit == Decimal("0.60")
+    assert entry.target_close_credit == Decimal("0.30")
+    assert entry.exit_credit == Decimal("0.30")
+    assert entry.pnl == Decimal("30.00")
+    assert entry.exit_time is not None
+    assert result.realized_pnl == Decimal("30.00")
+    assert result.unrealized_pnl == Decimal("0.00")
+    assert result.open_risk_at_close == Decimal("0.00")

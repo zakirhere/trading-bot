@@ -56,7 +56,7 @@ def test_total_open_cap():
         is_live=False,
         expected_notional_usd=400,
         open_position_count=2,
-        open_risk_usd=1700,
+        open_risk_usd=9800,
         now_et=MID_DAY,
     )
     assert not rc.allowed

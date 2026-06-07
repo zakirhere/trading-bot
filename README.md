@@ -33,6 +33,17 @@ Rehearse the signal without submitting an order:
 .venv/bin/python -m tradebot.daemon --dry-run --no-server
 ```
 
+Run strategy backtests without placing orders:
+
+```bash
+.venv/bin/python -m tradebot.daemon --backtest-spy-credit 2026-06-05
+.venv/bin/python -m tradebot.daemon --backtest-spy-income-credit 2026-06-05
+```
+
+The SPY income-credit backtest scans 5 total daily entries, checks both call and
+put credit spreads, targets roughly $0.60 credit on $1-wide spreads, prevents
+duplicate expiry/strike combinations, and marks winners closed at 50% profit.
+
 The launchd job is also dry-run by default. A real paper order requires running
 the daemon without `--dry-run`.
 

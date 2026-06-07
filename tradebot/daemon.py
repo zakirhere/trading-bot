@@ -157,6 +157,68 @@ def cmd_backtest_spy_credit(*, trading_date: date, seed: int) -> int:
     return 0
 
 
+def cmd_backtest_spy_income_credit(*, trading_date: date, seed: int) -> int:
+    cfg = config.load_alpaca_config()
+    data = spy_credit_strategy.AlpacaMarketData(cfg)
+    try:
+        result = spy_credit_strategy.run_income_backtest_for_date(
+            trading_date=trading_date,
+            data=data,
+            seed=seed,
+        )
+    finally:
+        data.close()
+
+    print(f"date={result.trading_date} previous_close={result.previous_close}")
+    print(
+        "trades_found="
+        f"{result.trades_found} "
+        f"realized_pnl=${result.realized_pnl} "
+        f"unrealized_pnl=${result.unrealized_pnl} "
+        f"total_pnl=${result.total_pnl} "
+        f"open_risk_at_close=${result.open_risk_at_close}"
+    )
+    print("time_et,spy,direction,expiry,short,long,entry_credit,target_close,exit_or_close_credit,pnl,status")
+    for entry in result.entries:
+        candidate = entry.candidate
+        if candidate is None:
+            print(
+                ",".join(
+                    [
+                        entry.entry_time.strftime("%H:%M"),
+                        str(entry.spy_price),
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        entry.status,
+                    ]
+                )
+            )
+            continue
+        print(
+            ",".join(
+                [
+                    entry.entry_time.strftime("%H:%M"),
+                    str(entry.spy_price),
+                    candidate.direction,
+                    candidate.expiration_date.isoformat(),
+                    f"{candidate.short_symbol}@{candidate.short_strike}",
+                    f"{candidate.long_symbol}@{candidate.long_strike}",
+                    str(candidate.credit),
+                    "" if entry.target_close_credit is None else str(entry.target_close_credit),
+                    "" if entry.exit_credit is None else str(entry.exit_credit),
+                    "" if entry.pnl is None else str(entry.pnl),
+                    entry.status,
+                ]
+            )
+        )
+    return 0
+
+
 def cmd_serve(*, force_closed: bool) -> int:
     stop_event = threading.Event()
 
@@ -297,6 +359,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="process currently due queued trade requests and exit")
     p.add_argument("--backtest-spy-credit", metavar="YYYY-MM-DD",
                    help="backtest the SPY credit-spread DCA scanner for one trading date")
+    p.add_argument("--backtest-spy-income-credit", metavar="YYYY-MM-DD",
+                   help="backtest the SPY 0.60-credit spread income scanner for one trading date")
     p.add_argument("--backtest-seed", type=int, default=20260605,
                    help="random seed for backtest entry times")
     p.add_argument("--symbol", help="stock symbol for a plumbing market-buy signal")
@@ -318,6 +382,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.backtest_spy_credit:
         return cmd_backtest_spy_credit(
             trading_date=date.fromisoformat(args.backtest_spy_credit),
+            seed=args.backtest_seed,
+        )
+    if args.backtest_spy_income_credit:
+        return cmd_backtest_spy_income_credit(
+            trading_date=date.fromisoformat(args.backtest_spy_income_credit),
             seed=args.backtest_seed,
         )
     if args.serve:

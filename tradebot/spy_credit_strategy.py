@@ -85,6 +85,57 @@ class BacktestResult:
         return money(total)
 
 
+@dataclass(frozen=True)
+class IncomeBacktestEntry:
+    entry_time: datetime
+    spy_price: Decimal
+    candidate: SpreadCandidate | None
+    target_close_credit: Decimal | None
+    exit_time: datetime | None
+    exit_credit: Decimal | None
+    pnl: Decimal | None
+    status: str
+
+
+@dataclass(frozen=True)
+class IncomeBacktestResult:
+    trading_date: date
+    previous_close: Decimal
+    entries: list[IncomeBacktestEntry]
+
+    @property
+    def trades_found(self) -> int:
+        return sum(1 for e in self.entries if e.candidate is not None)
+
+    @property
+    def realized_pnl(self) -> Decimal:
+        total = Decimal("0")
+        for entry in self.entries:
+            if entry.exit_time is not None and entry.pnl is not None:
+                total += entry.pnl
+        return money(total)
+
+    @property
+    def unrealized_pnl(self) -> Decimal:
+        total = Decimal("0")
+        for entry in self.entries:
+            if entry.exit_time is None and entry.candidate is not None and entry.pnl is not None:
+                total += entry.pnl
+        return money(total)
+
+    @property
+    def total_pnl(self) -> Decimal:
+        return money(self.realized_pnl + self.unrealized_pnl)
+
+    @property
+    def open_risk_at_close(self) -> Decimal:
+        total = Decimal("0")
+        for entry in self.entries:
+            if entry.exit_time is None and entry.candidate is not None:
+                total += max_risk(entry.candidate)
+        return money(total)
+
+
 class AlpacaMarketData:
     def __init__(self, cfg: config.AlpacaConfig):
         self._trading = broker.AlpacaBroker(cfg)
@@ -252,6 +303,155 @@ def run_backtest_for_date(
         )
 
     return BacktestResult(trading_date=trading_date, previous_close=prev_close, entries=entries)
+
+
+def run_income_backtest_for_date(
+    *,
+    trading_date: date,
+    data: AlpacaMarketData,
+    seed: int,
+    entries_per_day: int = 5,
+    target_min: Decimal = Decimal("0.58"),
+    target_max: Decimal = Decimal("0.62"),
+    reject_at_or_above: Decimal = Decimal("0.65"),
+    profit_take_pct: Decimal = Decimal("0.50"),
+    min_dte: int = 8,
+    max_dte: int = 42,
+    spread_width: Decimal = Decimal("1"),
+) -> IncomeBacktestResult:
+    day_start = datetime.combine(trading_date, MARKET_OPEN, ET)
+    day_end = datetime.combine(trading_date, MARKET_CLOSE, ET)
+    spy_bars = data.stock_bars(symbol="SPY", start=day_start, end=day_end, timeframe="1Min")
+    if not spy_bars:
+        raise RuntimeError(f"no SPY intraday bars for {trading_date}")
+
+    prev_close = previous_close(data, trading_date)
+    rng = random.Random(seed)
+    entry_times = random_entry_times(trading_date, entries_per_day, rng)
+    expiry_pool = available_expiries(
+        data,
+        trading_date=trading_date,
+        min_dte=min_dte,
+        max_dte=max_dte,
+    )
+    if not expiry_pool:
+        raise RuntimeError("no eligible SPY option expiries returned by Alpaca")
+
+    entries: list[IncomeBacktestEntry] = []
+    blocked_spreads: set[tuple[str, date, Decimal, Decimal]] = set()
+    for entry_time in entry_times:
+        spy_price = bar_close_at_or_before(spy_bars, entry_time)
+        candidate = find_best_two_sided_candidate(
+            data=data,
+            expiries=expiry_pool,
+            entry_time=entry_time,
+            close_time=day_end,
+            rng=rng,
+            target_min=target_min,
+            target_max=target_max,
+            reject_at_or_above=reject_at_or_above,
+            spread_width=spread_width,
+            blocked_spreads=blocked_spreads,
+        )
+        if candidate is None:
+            entries.append(
+                IncomeBacktestEntry(
+                    entry_time=entry_time,
+                    spy_price=spy_price,
+                    candidate=None,
+                    target_close_credit=None,
+                    exit_time=None,
+                    exit_credit=None,
+                    pnl=None,
+                    status="no qualifying spread",
+                )
+            )
+            continue
+
+        blocked_spreads.add(candidate.key)
+        target_close_credit = money(candidate.credit * profit_take_pct)
+        bars = data.option_bars(
+            symbols=[candidate.short_symbol, candidate.long_symbol],
+            start=entry_time - timedelta(minutes=2),
+            end=day_end,
+        )
+        exit_time, exit_credit = first_profit_take_exit(
+            short_bars=bars.get(candidate.short_symbol, []),
+            long_bars=bars.get(candidate.long_symbol, []),
+            entry_time=entry_time,
+            target_close_credit=target_close_credit,
+        )
+        if exit_time and exit_credit is not None:
+            pnl = money((candidate.credit - exit_credit) * Decimal("100"))
+            status = f"closed {exit_time.strftime('%H:%M')} ET at 50%+"
+        else:
+            close_credit = latest_spread_credit(
+                short_bars=bars.get(candidate.short_symbol, []),
+                long_bars=bars.get(candidate.long_symbol, []),
+                moment=day_end,
+            )
+            exit_credit = close_credit
+            pnl = money((candidate.credit - close_credit) * Decimal("100")) if close_credit is not None else None
+            status = "held at close"
+
+        entries.append(
+            IncomeBacktestEntry(
+                entry_time=entry_time,
+                spy_price=spy_price,
+                candidate=candidate,
+                target_close_credit=target_close_credit,
+                exit_time=exit_time,
+                exit_credit=exit_credit,
+                pnl=pnl,
+                status=status,
+            )
+        )
+
+    return IncomeBacktestResult(trading_date=trading_date, previous_close=prev_close, entries=entries)
+
+
+def find_best_two_sided_candidate(
+    *,
+    data: AlpacaMarketData,
+    expiries: list[date],
+    entry_time: datetime,
+    close_time: datetime,
+    rng: random.Random,
+    target_min: Decimal,
+    target_max: Decimal,
+    reject_at_or_above: Decimal,
+    spread_width: Decimal,
+    blocked_spreads: set[tuple[str, date, Decimal, Decimal]],
+) -> SpreadCandidate | None:
+    candidates: list[SpreadCandidate] = []
+    for direction in ("call_credit", "put_credit"):
+        for expiry in ranked_expiries(expiries, entry_time, rng):
+            candidate = find_best_candidate(
+                data=data,
+                direction=direction,
+                expiration_date=expiry,
+                entry_time=entry_time,
+                close_time=close_time,
+                target_min=target_min,
+                target_max=target_max,
+                reject_at_or_above=reject_at_or_above,
+                spread_width=spread_width,
+                blocked_spreads=blocked_spreads,
+            )
+            if candidate:
+                candidates.append(candidate)
+    if not candidates:
+        return None
+    target = money((target_min + target_max) / Decimal("2"))
+    return min(
+        candidates,
+        key=lambda c: (
+            abs(c.credit - target),
+            c.expiration_date,
+            c.direction,
+            c.short_strike,
+        ),
+    )
 
 
 def find_best_candidate(
@@ -432,6 +632,25 @@ def latest_spread_credit(
     return money(short_by_ts[ts] - long_by_ts[ts])
 
 
+def first_profit_take_exit(
+    *,
+    short_bars: list[dict],
+    long_bars: list[dict],
+    entry_time: datetime,
+    target_close_credit: Decimal,
+) -> tuple[datetime | None, Decimal | None]:
+    short_by_ts = bars_by_timestamp(short_bars, datetime.max.replace(tzinfo=ET))
+    long_by_ts = bars_by_timestamp(long_bars, datetime.max.replace(tzinfo=ET))
+    common = sorted(set(short_by_ts) & set(long_by_ts))
+    for ts in common:
+        if ts < entry_time:
+            continue
+        credit = money(short_by_ts[ts] - long_by_ts[ts])
+        if credit <= target_close_credit:
+            return ts, credit
+    return None, None
+
+
 def bars_by_timestamp(bars: list[dict], moment: datetime) -> dict[datetime, Decimal]:
     out: dict[datetime, Decimal] = {}
     for bar in bars:
@@ -447,6 +666,10 @@ def to_utc_iso(moment: datetime) -> str:
 
 def money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def max_risk(candidate: SpreadCandidate) -> Decimal:
+    return money((candidate.width - candidate.credit) * Decimal("100"))
 
 
 def chunks(items: list[str], size: int):

@@ -10,7 +10,7 @@ phased ramp from backtest → paper → live micro → scale.
   Default mode must never submit live orders.
 - **Risk caps are hardcoded guardrails.** Config can only make them tighter, never looser:
   - Max risk per trade: $500
-  - Max total open risk: $2,000
+  - Max total open risk: $10,000
   - Max concurrent positions: 20
   - Daily loss limit: -2% of account → hard halt
 - **Every order needs an idempotency key:** `{strategy}_{symbol}_{date}_{intent_hash}`.
@@ -44,10 +44,18 @@ If paper P&L diverges from live P&L at phase 3, that's a model bug — fix befor
 ## What I haven't decided yet
 - Broker: Tastytrade > IBKR > Alpaca (need to verify 2026 API status before committing)
 - Account size + initial capital
-- Specific first rule (initial candidate: "sell 30-day, 25-delta SPY put credit
-  spread when VIX > 20 and account is < 50% deployed")
 - Backtesting data source / library
 - Hosting: laptop + launchd, or cloud (laptop = simpler, cloud = always-on)
+
+## Strategy candidates under simulation
+- SPY directional $0.20 credit spread DCA:
+  5 random daily entries, direction from SPY green/red vs previous close, expiry
+  8-42 DTE, $1-wide spreads, no duplicate expiry/strike combinations.
+- SPY $0.60 income credit spread:
+  5 total daily entries, scan both call and put credit spreads, expiry 8-42 DTE,
+  $1-wide spreads, no duplicate expiry/strike combinations, close winners at
+  50% profit, keep losers open across days, continue opening until open risk is
+  near the $10k simulation cap.
 
 ## Working style with me (Claude)
 - Bias toward caution over cleverness in every architectural decision.
