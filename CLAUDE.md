@@ -32,6 +32,9 @@ phased ramp from backtest → paper → live micro → scale.
   Historical option bars do not accept `feed`; current/future option bars can
   return 403 without OPRA entitlement. Live schedulers should select from
   latest indicative quotes.
+- **Alpaca MLeg limit prices are signed.** Positive `limit_price` is debit;
+  negative `limit_price` is credit. A `$0.58` credit spread must submit
+  `limit_price="-0.58"` or it may fill for less credit than intended.
 
 ## Architectural style
 - Python daemon, launchd service, runs as me (personal Mac).

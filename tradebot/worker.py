@@ -4,8 +4,9 @@ import logging
 import sqlite3
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 
-from . import broker, config, db, notify, risk, state, strategy_runner
+from . import broker, config, db, notify, risk, spy_credit_strategy, state, strategy_runner
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +23,57 @@ _BROKER_ERROR_STATUSES = {"canceled", "expired", "rejected", "failed", "done_for
 
 def _client_order_id(req: db.TradeRequest) -> str:
     return f"queue_{req.id}_{req.kind}_{req.symbol}"
+
+
+def mleg_net_limit_price(req: db.TradeRequest) -> float:
+    # Alpaca MLeg net prices are signed: positive is debit, negative is credit.
+    if req.order_type == "limit_credit":
+        return -abs(float(req.payload["limit_credit"]))
+    return float(req.payload["limit_price"])
+
+
+def requote_credit_for_request(
+    alpaca_cfg: config.AlpacaConfig,
+    req: db.TradeRequest,
+) -> Decimal | None:
+    legs = req.payload.get("legs", [])
+    sell_leg = next((leg for leg in legs if leg.get("side") == "sell"), None)
+    buy_leg = next((leg for leg in legs if leg.get("side") == "buy"), None)
+    if not sell_leg or not buy_leg:
+        return None
+
+    data = spy_credit_strategy.AlpacaMarketData(alpaca_cfg)
+    try:
+        quotes = data.option_latest_quotes(symbols=[sell_leg["symbol"], buy_leg["symbol"]])
+    finally:
+        data.close()
+    sell_quote = quotes.get(sell_leg["symbol"])
+    buy_quote = quotes.get(buy_leg["symbol"])
+    if not sell_quote or not buy_quote:
+        return None
+    sell_bid = spy_credit_strategy.quote_decimal(sell_quote, "bp")
+    buy_ask = spy_credit_strategy.quote_decimal(buy_quote, "ap")
+    if sell_bid is None or buy_ask is None:
+        return None
+    return spy_credit_strategy.money(sell_bid - buy_ask)
+
+
+def credit_band_check(req: db.TradeRequest, credit: Decimal) -> risk.RiskCheck:
+    if req.order_type != "limit_credit":
+        return risk.RiskCheck(True)
+    payload = req.payload
+    if not {"target_min", "target_max", "reject_at_or_above"} <= set(payload):
+        return risk.RiskCheck(True)
+    target_min = Decimal(str(payload["target_min"]))
+    target_max = Decimal(str(payload["target_max"]))
+    reject_at_or_above = Decimal(str(payload["reject_at_or_above"]))
+    if credit < target_min:
+        return risk.RiskCheck(False, f"requote credit {credit} < target min {target_min}")
+    if credit > target_max:
+        return risk.RiskCheck(False, f"requote credit {credit} > target max {target_max}")
+    if credit >= reject_at_or_above:
+        return risk.RiskCheck(False, f"requote credit {credit} >= reject {reject_at_or_above}")
+    return risk.RiskCheck(True)
 
 
 def execute_request(
@@ -121,10 +173,26 @@ def execute_request(
             )
             message = f"Submitted market buy {req.qty:g} {req.symbol}."
         else:
+            requote_credit = requote_credit_for_request(cfg, req)
+            if requote_credit is None:
+                return db.update_status(
+                    conn,
+                    req.id,
+                    status=db.STATUS_BLOCKED,
+                    reason="missing option quote for pre-submit credit check",
+                )
+            band_check = credit_band_check(req, requote_credit)
+            if not band_check.allowed:
+                return db.update_status(
+                    conn,
+                    req.id,
+                    status=db.STATUS_BLOCKED,
+                    reason=band_check.reason,
+                )
             strategy_name = req.payload.get("strategy", "SPREAD")
             result = b.submit_mleg_limit_order(
                 qty=int(req.qty),
-                limit_price=float(req.payload["limit_credit"]),
+                limit_price=mleg_net_limit_price(req),
                 legs=req.payload["legs"],
                 client_order_id=client_order_id,
             )

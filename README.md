@@ -59,6 +59,17 @@ OPRA-style option bars without the right subscription return `403 Forbidden`;
 option bars with an unexpected feed parameter return `400 Bad Request`. For
 live paper selection, use latest indicative option quotes instead.
 
+For multi-leg option orders, Alpaca uses signed net prices:
+
+```text
+debit limit: positive limit_price
+credit limit: negative limit_price
+```
+
+Example: a target `$0.58` credit spread must be submitted as
+`limit_price="-0.58"`. Submitting `"+0.58"` is interpreted as a debit-side
+limit and can fill for much less credit than intended.
+
 The launchd job is also dry-run by default. A real paper order requires running
 the daemon without `--dry-run`.
 

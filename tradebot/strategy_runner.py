@@ -57,6 +57,9 @@ def run_icl_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
 
     payload = {
         **spy_credit_strategy.candidate_payload(candidate),
+        "target_min": "0.58",
+        "target_max": "0.62",
+        "reject_at_or_above": "0.65",
         "slot_time": due_slot.isoformat(),
         "selected_at": now_et.isoformat(),
     }
@@ -103,6 +106,9 @@ def run_dca_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
     payload = {
         **spy_credit_strategy.candidate_payload(candidate),
         "strategy": "DCA",
+        "target_min": "0.20",
+        "target_max": "0.22",
+        "reject_at_or_above": "0.25",
         "slot_time": due_slot.isoformat(),
         "selected_at": now_et.isoformat(),
     }
