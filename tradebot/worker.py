@@ -76,6 +76,42 @@ def credit_band_check(req: db.TradeRequest, credit: Decimal) -> risk.RiskCheck:
     return risk.RiskCheck(True)
 
 
+def latest_underlying_price_for_request(
+    alpaca_cfg: config.AlpacaConfig,
+    req: db.TradeRequest,
+) -> Decimal | None:
+    now_et = datetime.now(spy_credit_strategy.ET)
+    day_start = datetime.combine(now_et.date(), spy_credit_strategy.MARKET_OPEN, spy_credit_strategy.ET)
+    data = spy_credit_strategy.AlpacaMarketData(alpaca_cfg)
+    try:
+        bars = data.stock_bars(symbol=req.symbol, start=day_start, end=now_et, timeframe="1Min")
+    finally:
+        data.close()
+    if not bars:
+        return None
+    return spy_credit_strategy.latest_close(bars, now_et)
+
+
+def option_spread_moneyness_check(req: db.TradeRequest, underlying_price: Decimal) -> risk.RiskCheck:
+    if req.kind != "option_spread_open":
+        return risk.RiskCheck(True)
+    payload = req.payload
+    if not {"direction", "short_strike"} <= set(payload):
+        return risk.RiskCheck(False, "missing option spread moneyness fields")
+    direction = str(payload["direction"])
+    short_strike = Decimal(str(payload["short_strike"]))
+    if not spy_credit_strategy.spread_is_otm(
+        direction=direction,
+        short_strike=short_strike,
+        underlying_price=underlying_price,
+    ):
+        return risk.RiskCheck(
+            False,
+            f"{direction} short strike {short_strike} is not OTM vs {req.symbol} {underlying_price}",
+        )
+    return risk.RiskCheck(True)
+
+
 def duplicate_open_option_leg_check(req: db.TradeRequest, positions: list[dict]) -> risk.RiskCheck:
     if req.kind != "option_spread_open":
         return risk.RiskCheck(True)
@@ -206,6 +242,22 @@ def execute_request(
             )
             message = f"Submitted market buy {req.qty:g} {req.symbol}."
         else:
+            underlying_price = latest_underlying_price_for_request(cfg, req)
+            if underlying_price is None:
+                return db.update_status(
+                    conn,
+                    req.id,
+                    status=db.STATUS_BLOCKED,
+                    reason="missing underlying price for moneyness check",
+                )
+            moneyness_check = option_spread_moneyness_check(req, underlying_price)
+            if not moneyness_check.allowed:
+                return db.update_status(
+                    conn,
+                    req.id,
+                    status=db.STATUS_BLOCKED,
+                    reason=moneyness_check.reason,
+                )
             requote_credit = requote_credit_for_request(cfg, req)
             if requote_credit is None:
                 return db.update_status(

@@ -143,8 +143,8 @@ class IncomeStrategyData:
             ]
         if option_type == "call":
             return [
-                strategy.OptionContract("CALL_SHORT", expiration_gte, Decimal("700"), option_type),
-                strategy.OptionContract("CALL_LONG", expiration_gte, Decimal("701"), option_type),
+                strategy.OptionContract("CALL_SHORT", expiration_gte, Decimal("760"), option_type),
+                strategy.OptionContract("CALL_LONG", expiration_gte, Decimal("761"), option_type),
             ]
         return [
             strategy.OptionContract("PUT_SHORT", expiration_gte, Decimal("700"), option_type),
@@ -194,6 +194,31 @@ class LatestQuoteData:
             "BLOCKED_LONG": {"ap": 0.80},
             "OPEN_SHORT": {"bp": 1.00},
             "OPEN_LONG": {"ap": 0.80},
+        }
+
+
+class LatestQuoteMoneynessData:
+    def option_contracts(self, *, underlying, expiration_gte, expiration_lte, option_type):
+        assert underlying == "SPY"
+        assert expiration_gte == expiration_lte
+        if option_type == "call":
+            return [
+                strategy.OptionContract("ITM_CALL_SHORT", expiration_gte, Decimal("706"), option_type),
+                strategy.OptionContract("ITM_CALL_LONG", expiration_gte, Decimal("707"), option_type),
+                strategy.OptionContract("OTM_CALL_SHORT", expiration_gte, Decimal("760"), option_type),
+                strategy.OptionContract("OTM_CALL_LONG", expiration_gte, Decimal("761"), option_type),
+            ]
+        return [
+            strategy.OptionContract("ITM_PUT_SHORT", expiration_gte, Decimal("760"), option_type),
+            strategy.OptionContract("ITM_PUT_LONG", expiration_gte, Decimal("759"), option_type),
+            strategy.OptionContract("OTM_PUT_SHORT", expiration_gte, Decimal("706"), option_type),
+            strategy.OptionContract("OTM_PUT_LONG", expiration_gte, Decimal("705"), option_type),
+        ]
+
+    def option_latest_quotes(self, *, symbols):
+        return {
+            symbol: {"bp": 1.00, "ap": 0.80}
+            for symbol in symbols
         }
 
 
@@ -334,3 +359,37 @@ def test_latest_quote_selection_skips_blocked_open_symbols():
     assert candidate is not None
     assert candidate.short_symbol == "OPEN_SHORT"
     assert candidate.long_symbol == "OPEN_LONG"
+
+
+def test_latest_quote_selection_rejects_itm_call_credit():
+    candidate = strategy.find_best_candidate_from_latest_quotes(
+        data=LatestQuoteMoneynessData(),
+        direction="call_credit",
+        expiration_date=date(2026, 6, 30),
+        target_min=Decimal("0.20"),
+        target_max=Decimal("0.22"),
+        reject_at_or_above=Decimal("0.25"),
+        spread_width=Decimal("1"),
+        underlying_price=Decimal("741.64"),
+    )
+
+    assert candidate is not None
+    assert candidate.short_symbol == "OTM_CALL_SHORT"
+    assert candidate.short_strike == Decimal("760")
+
+
+def test_latest_quote_selection_rejects_itm_put_credit():
+    candidate = strategy.find_best_candidate_from_latest_quotes(
+        data=LatestQuoteMoneynessData(),
+        direction="put_credit",
+        expiration_date=date(2026, 6, 30),
+        target_min=Decimal("0.20"),
+        target_max=Decimal("0.22"),
+        reject_at_or_above=Decimal("0.25"),
+        spread_width=Decimal("1"),
+        underlying_price=Decimal("741.64"),
+    )
+
+    assert candidate is not None
+    assert candidate.short_symbol == "OTM_PUT_SHORT"
+    assert candidate.short_strike == Decimal("706")

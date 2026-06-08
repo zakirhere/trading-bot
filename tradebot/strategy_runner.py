@@ -211,6 +211,7 @@ def select_icl_candidate(
             spread_width=Decimal("1"),
             blocked_spreads=blocked,
             blocked_symbols=blocked_symbols,
+            underlying_price=spy_price,
         )
         if candidate:
             return candidate
@@ -251,6 +252,7 @@ def select_dca_candidate(
             spread_width=Decimal("1"),
             blocked_spreads=blocked,
             blocked_symbols=blocked_symbols,
+            underlying_price=spy_price,
         )
         if candidate:
             return candidate

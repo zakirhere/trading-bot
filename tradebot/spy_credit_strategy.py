@@ -312,6 +312,7 @@ def run_backtest_for_date(
                 reject_at_or_above=reject_at_or_above,
                 spread_width=spread_width,
                 blocked_spreads=blocked_spreads,
+                underlying_price=spy_price,
             )
             if candidate is not None:
                 reason = "selected"
@@ -381,6 +382,7 @@ def run_income_backtest_for_date(
             reject_at_or_above=reject_at_or_above,
             spread_width=spread_width,
             blocked_spreads=blocked_spreads,
+            underlying_price=spy_price,
         )
         if candidate is None:
             entries.append(
@@ -452,6 +454,7 @@ def find_best_income_candidate(
     reject_at_or_above: Decimal,
     spread_width: Decimal,
     blocked_spreads: set[tuple[str, date, Decimal, Decimal]],
+    underlying_price: Decimal | None = None,
 ) -> SpreadCandidate | None:
     candidates: list[SpreadCandidate] = []
     for expiry in ranked_expiries(expiries, entry_time, rng):
@@ -466,6 +469,7 @@ def find_best_income_candidate(
             reject_at_or_above=reject_at_or_above,
             spread_width=spread_width,
             blocked_spreads=blocked_spreads,
+            underlying_price=underlying_price,
         )
         if candidate:
             candidates.append(candidate)
@@ -531,6 +535,7 @@ def find_best_candidate(
     reject_at_or_above: Decimal,
     spread_width: Decimal,
     blocked_spreads: set[tuple[str, date, Decimal, Decimal]] | None = None,
+    underlying_price: Decimal | None = None,
 ) -> SpreadCandidate | None:
     option_type = "call" if direction == "call_credit" else "put"
     contracts = data.option_contracts(
@@ -553,6 +558,12 @@ def find_best_candidate(
     bars = data.option_bars(symbols=symbols, start=entry_time - timedelta(minutes=2), end=close_time)
     candidates: list[SpreadCandidate] = []
     for short, long in pairs:
+        if underlying_price is not None and not spread_is_otm(
+            direction=direction,
+            short_strike=short.strike_price,
+            underlying_price=underlying_price,
+        ):
+            continue
         credit = latest_spread_credit(
             short_bars=bars.get(short.symbol, []),
             long_bars=bars.get(long.symbol, []),
@@ -612,6 +623,7 @@ def find_best_candidate_from_latest_quotes(
     spread_width: Decimal,
     blocked_spreads: set[tuple[str, date, Decimal, Decimal]] | None = None,
     blocked_symbols: set[str] | None = None,
+    underlying_price: Decimal | None = None,
 ) -> SpreadCandidate | None:
     option_type = "call" if direction == "call_credit" else "put"
     contracts = data.option_contracts(
@@ -634,6 +646,12 @@ def find_best_candidate_from_latest_quotes(
     quotes = data.option_latest_quotes(symbols=symbols)
     candidates: list[SpreadCandidate] = []
     for short, long in pairs:
+        if underlying_price is not None and not spread_is_otm(
+            direction=direction,
+            short_strike=short.strike_price,
+            underlying_price=underlying_price,
+        ):
+            continue
         if blocked_symbols and (short.symbol in blocked_symbols or long.symbol in blocked_symbols):
             continue
         candidate_key = spread_key(
@@ -679,6 +697,14 @@ def find_best_candidate_from_latest_quotes(
             c.short_strike,
         ),
     )
+
+
+def spread_is_otm(*, direction: str, short_strike: Decimal, underlying_price: Decimal) -> bool:
+    if direction == "call_credit":
+        return short_strike > underlying_price
+    if direction == "put_credit":
+        return short_strike < underlying_price
+    return False
 def spread_key(
     *,
     direction: str,
