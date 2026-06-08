@@ -16,6 +16,8 @@ def _clear_alpaca_env(monkeypatch):
         "NOTIFY_PROVIDER",
         "SLACK_WEBHOOK_URL",
         "TRADEBOT_ICL_PAPER_AUTORUN",
+        "TRADEBOT_DCA_PAPER_AUTORUN",
+        "TRADEBOT_ORB_OBSERVE",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -126,3 +128,16 @@ def test_strategy_config_accepts_icl_autorun(tmp_path):
     )
 
     assert cfg.icl_paper_autorun
+
+
+def test_strategy_config_accepts_dca_and_orb_flags(tmp_path):
+    cfg = config.load_strategy_config(
+        _env_file(
+            tmp_path,
+            TRADEBOT_DCA_PAPER_AUTORUN="1",
+            TRADEBOT_ORB_OBSERVE="1",
+        )
+    )
+
+    assert cfg.dca_paper_autorun
+    assert cfg.orb_observe

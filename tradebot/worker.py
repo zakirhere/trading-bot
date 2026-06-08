@@ -111,6 +111,7 @@ def execute_request(
             )
             message = f"Submitted market buy {req.qty:g} {req.symbol}."
         else:
+            strategy_name = req.payload.get("strategy", "SPREAD")
             result = b.submit_mleg_limit_order(
                 qty=int(req.qty),
                 limit_price=float(req.payload["limit_credit"]),
@@ -118,7 +119,7 @@ def execute_request(
                 client_order_id=client_order_id,
             )
             message = (
-                f"Submitted ICL {req.payload['direction']} "
+                f"Submitted {strategy_name} {req.payload['direction']} "
                 f"{req.payload['short_symbol']}/{req.payload['long_symbol']} "
                 f"for ${float(req.payload['limit_credit']):.2f} credit."
             )
@@ -207,6 +208,14 @@ def run_forever(
                 strategy_runner.run_icl_scheduler_once(conn)
             except Exception:
                 log.exception("ICL scheduler failed")
+            try:
+                strategy_runner.run_dca_scheduler_once(conn)
+            except Exception:
+                log.exception("DCA scheduler failed")
+            try:
+                strategy_runner.run_orb_observer_once(conn)
+            except Exception:
+                log.exception("ORB observer failed")
             run_once(conn, force_closed=force_closed)
             time.sleep(poll_seconds)
     finally:

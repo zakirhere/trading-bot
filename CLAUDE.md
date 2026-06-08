@@ -25,6 +25,8 @@ phased ramp from backtest → paper → live micro → scale.
 - **Option spreads use limit orders only.** Never submit market orders for option
   spreads. Entries require limit credit at or above the strategy minimum; exits
   require limit debit at or below the profit target.
+- **Never trade AAPL.** User works for Apple. AAPL is excluded from manual stock
+  orders, stock strategies, and future scanners.
 
 ## Architectural style
 - Python daemon, launchd service, runs as me (personal Mac).
@@ -63,6 +65,14 @@ If paper P&L diverges from live P&L at phase 3, that's a model bug — fix befor
   ICL trades in one day.
   Current automation slice is paper-only entry autorun behind
   `TRADEBOT_ICL_PAPER_AUTORUN=1`; 50% close/refill monitoring is not wired yet.
+- SPY DCA paper autorun:
+  enabled behind `TRADEBOT_DCA_PAPER_AUTORUN=1`, queues paper-only SPY DCA
+  limit-credit spread entries. DCA is contrarian/fade: SPY green -> call credit,
+  SPY red -> put credit.
+- ORB stock observe:
+  enabled behind `TRADEBOT_ORB_OBSERVE=1`, monitors SPY, QQQ, NVDA, TSLA, MSFT
+  for opening-range breakouts after the first 15 minutes until 11:30 ET. It logs
+  and alerts only; it does not place stock orders. AAPL is explicitly excluded.
 
 ## Working style with me (Claude)
 - Bias toward caution over cleverness in every architectural decision.

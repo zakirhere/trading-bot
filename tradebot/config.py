@@ -54,6 +54,8 @@ class DashboardAuthConfig:
 @dataclass(frozen=True)
 class StrategyConfig:
     icl_paper_autorun: bool
+    dca_paper_autorun: bool
+    orb_observe: bool
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -154,4 +156,6 @@ def load_strategy_config(env_path: Path | None = None) -> StrategyConfig:
 
     return StrategyConfig(
         icl_paper_autorun=env.get("TRADEBOT_ICL_PAPER_AUTORUN", "0") == "1",
+        dca_paper_autorun=env.get("TRADEBOT_DCA_PAPER_AUTORUN", "0") == "1",
+        orb_observe=env.get("TRADEBOT_ORB_OBSERVE", "0") == "1",
     )

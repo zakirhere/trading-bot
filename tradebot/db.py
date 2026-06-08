@@ -9,6 +9,8 @@ from typing import Any, Iterable
 
 from . import config
 
+NEVER_TRADE_SYMBOLS = {"AAPL"}
+
 
 STATUS_QUEUED = "queued"
 STATUS_SUBMITTED = "submitted"
@@ -35,6 +37,16 @@ class TradeRequest:
     payload: dict[str, Any]
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class StrategyEvent:
+    id: int
+    strategy: str
+    symbol: str
+    event_type: str
+    payload: dict[str, Any]
+    created_at: str
 
 
 def utc_now() -> str:
@@ -77,6 +89,24 @@ def init(conn: sqlite3.Connection) -> None:
         ON trade_requests(status, run_at)
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS strategy_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            payload TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_strategy_events_strategy_created
+        ON strategy_events(strategy, created_at)
+        """
+    )
     conn.commit()
 
 
@@ -100,6 +130,17 @@ def _row_to_request(row: sqlite3.Row) -> TradeRequest:
     )
 
 
+def _row_to_strategy_event(row: sqlite3.Row) -> StrategyEvent:
+    return StrategyEvent(
+        id=int(row["id"]),
+        strategy=row["strategy"],
+        symbol=row["symbol"],
+        event_type=row["event_type"],
+        payload=json.loads(row["payload"] or "{}"),
+        created_at=row["created_at"],
+    )
+
+
 def create_stock_market_buy(
     conn: sqlite3.Connection,
     *,
@@ -108,6 +149,8 @@ def create_stock_market_buy(
     run_at: str | None = None,
     dry_run: bool = False,
 ) -> TradeRequest:
+    if symbol.upper() in NEVER_TRADE_SYMBOLS:
+        raise ValueError(f"{symbol.upper()} is blocked by NEVER_TRADE_SYMBOLS")
     now = utc_now()
     cur = conn.execute(
         """
@@ -229,6 +272,56 @@ def update_status(
     )
     conn.commit()
     return get(conn, request_id)
+
+
+def create_strategy_event(
+    conn: sqlite3.Connection,
+    *,
+    strategy: str,
+    symbol: str,
+    event_type: str,
+    payload: dict[str, Any],
+) -> StrategyEvent:
+    now = utc_now()
+    cur = conn.execute(
+        """
+        INSERT INTO strategy_events (
+            strategy, symbol, event_type, payload, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (strategy, symbol.upper(), event_type, json.dumps(payload, sort_keys=True), now),
+    )
+    conn.commit()
+    return get_strategy_event(conn, int(cur.lastrowid))
+
+
+def get_strategy_event(conn: sqlite3.Connection, event_id: int) -> StrategyEvent:
+    row = conn.execute(
+        "SELECT * FROM strategy_events WHERE id = ?", (event_id,)
+    ).fetchone()
+    if row is None:
+        raise KeyError(f"strategy event {event_id} not found")
+    return _row_to_strategy_event(row)
+
+
+def list_strategy_events(
+    conn: sqlite3.Connection,
+    *,
+    strategy: str,
+    since: str,
+    limit: int = 100,
+) -> list[StrategyEvent]:
+    rows = conn.execute(
+        """
+        SELECT * FROM strategy_events
+        WHERE strategy = ?
+          AND created_at >= ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (strategy, since, limit),
+    ).fetchall()
+    return [_row_to_strategy_event(row) for row in rows]
 
 
 def as_dict(req: TradeRequest) -> dict[str, Any]:

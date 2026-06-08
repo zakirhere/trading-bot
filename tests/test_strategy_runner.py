@@ -86,3 +86,44 @@ def test_blocked_spreads_uses_payload_identity(tmp_path):
         ) in blocked
     finally:
         conn.close()
+
+
+class OrbData:
+    def stock_bars(self, *, symbol, start, end, timeframe):
+        assert symbol != "AAPL"
+        if symbol == "NVDA":
+            return [
+                {"t": "2026-06-08T13:30:00Z", "h": 100.00, "l": 99.00, "c": 99.50},
+                {"t": "2026-06-08T13:44:00Z", "h": 101.00, "l": 99.20, "c": 100.50},
+                {"t": "2026-06-08T14:00:00Z", "h": 102.00, "l": 100.50, "c": 101.50},
+            ]
+        return [
+            {"t": "2026-06-08T13:30:00Z", "h": 100.00, "l": 99.00, "c": 99.50},
+            {"t": "2026-06-08T13:44:00Z", "h": 101.00, "l": 99.20, "c": 100.50},
+            {"t": "2026-06-08T14:00:00Z", "h": 100.50, "l": 99.50, "c": 100.00},
+        ]
+
+
+def test_orb_scan_excludes_aapl_and_finds_breakout():
+    now = datetime(2026, 6, 8, 10, 0, tzinfo=ET)
+
+    signals = strategy_runner.scan_orb_signals(data=OrbData(), now_et=now, existing=[])
+
+    assert [signal.symbol for signal in signals] == ["NVDA"]
+    assert signals[0].side == "breakout_up"
+
+
+def test_orb_scan_does_not_repeat_existing_signal():
+    now = datetime(2026, 6, 8, 10, 0, tzinfo=ET)
+    event = db.StrategyEvent(
+        id=1,
+        strategy="ORB",
+        symbol="NVDA",
+        event_type="breakout_up",
+        payload={},
+        created_at=now.isoformat(),
+    )
+
+    signals = strategy_runner.scan_orb_signals(data=OrbData(), now_et=now, existing=[event])
+
+    assert signals == []
