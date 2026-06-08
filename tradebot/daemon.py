@@ -7,7 +7,7 @@ import sys
 import threading
 from datetime import date
 
-from . import api, broker, config, db, killswitch, notify, signals, spy_credit_strategy, state, worker
+from . import api, broker, config, db, journal, killswitch, notify, signals, spy_credit_strategy, state, worker
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -99,6 +99,17 @@ def cmd_run_worker_once(*, force_closed: bool) -> int:
     print(f"processed={len(results)}")
     for req in results:
         print(f"  id={req.id} status={req.status} symbol={req.symbol} reason={req.reason!r}")
+    return 0
+
+
+def cmd_sync_journal() -> int:
+    conn = db.connect()
+    db.init(conn)
+    try:
+        path = journal.sync_from_db(conn)
+    finally:
+        conn.close()
+    print(f"journal={path}")
     return 0
 
 
@@ -357,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="run persistent dashboard/API and queue worker")
     p.add_argument("--run-worker-once", action="store_true",
                    help="process currently due queued trade requests and exit")
+    p.add_argument("--sync-journal", action="store_true",
+                   help="write the local Markdown trade journal from SQLite and exit")
     p.add_argument("--backtest-spy-credit", metavar="YYYY-MM-DD",
                    help="backtest the SPY credit-spread DCA scanner for one trading date")
     p.add_argument("--backtest-spy-income-credit", metavar="YYYY-MM-DD",
@@ -379,6 +392,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_account_check()
     if args.run_worker_once:
         return cmd_run_worker_once(force_closed=args.force_closed)
+    if args.sync_journal:
+        return cmd_sync_journal()
     if args.backtest_spy_credit:
         return cmd_backtest_spy_credit(
             trading_date=date.fromisoformat(args.backtest_spy_credit),

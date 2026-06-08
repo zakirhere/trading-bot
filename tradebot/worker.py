@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from . import broker, config, db, notify, risk, spy_credit_strategy, state, strategy_runner
+from . import broker, config, db, journal, notify, risk, spy_credit_strategy, state, strategy_runner
 
 log = logging.getLogger(__name__)
 
@@ -389,6 +389,10 @@ def run_forever(
                 reconcile_submitted_orders(conn)
             except Exception:
                 log.exception("order status reconciliation failed")
+            try:
+                journal.sync_from_db(conn)
+            except Exception:
+                log.exception("trade journal sync failed")
             time.sleep(poll_seconds)
     finally:
         conn.close()

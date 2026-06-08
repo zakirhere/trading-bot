@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = Path.home() / ".tradebot"
 STATE_FILE = STATE_DIR / "state.json"
 DB_FILE = STATE_DIR / "tradebot.sqlite"
+TRADE_JOURNAL_FILE = STATE_DIR / "trade-journal.md"
 DASHBOARD_TOKEN_FILE = STATE_DIR / "dashboard_token"
 
 KILLSWITCH_HOST = "127.0.0.1"

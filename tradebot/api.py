@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
-from . import config, db, nl, state, worker
+from . import config, db, journal, nl, state, worker
 
 log = logging.getLogger(__name__)
 COOKIE_NAME = "tradebot_session"
@@ -414,6 +414,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/trade-requests":
             self._reply_json(db.as_dicts(db.list_requests(conn)))
             return
+        if path == "/api/trade-journal":
+            path = journal.sync_from_db(conn)
+            self._reply_json({"path": str(path)})
+            return
         self._reply_json({"error": "not found"}, code=404)
 
     def do_POST(self):
@@ -498,6 +502,10 @@ class Handler(BaseHTTPRequestHandler):
                 s.halted = False
                 s.halt_reason = None
             self._redirect_or_json(path, {"halted": False})
+            return
+        if path == "/api/trade-journal/sync":
+            path = journal.sync_from_db(conn)
+            self._reply_json({"path": str(path)})
             return
         self._reply_json({"error": "not found"}, code=404)
 
