@@ -51,6 +51,11 @@ class DashboardAuthConfig:
     source: str
 
 
+@dataclass(frozen=True)
+class StrategyConfig:
+    icl_paper_autorun: bool
+
+
 def _load_dotenv(path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     if not path.exists():
@@ -139,3 +144,14 @@ def load_dashboard_auth_config(env_path: Path | None = None) -> DashboardAuthCon
     DASHBOARD_TOKEN_FILE.write_text(token + "\n")
     DASHBOARD_TOKEN_FILE.chmod(0o600)
     return DashboardAuthConfig(token=token, source=str(DASHBOARD_TOKEN_FILE))
+
+
+def load_strategy_config(env_path: Path | None = None) -> StrategyConfig:
+    if env_path is None:
+        env_path = PROJECT_ROOT / ".env"
+    file_env = _load_dotenv(env_path)
+    env = {**file_env, **os.environ}
+
+    return StrategyConfig(
+        icl_paper_autorun=env.get("TRADEBOT_ICL_PAPER_AUTORUN", "0") == "1",
+    )

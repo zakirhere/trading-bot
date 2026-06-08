@@ -134,6 +134,43 @@ def create_stock_market_buy(
     return get(conn, int(cur.lastrowid))
 
 
+def create_option_spread_open(
+    conn: sqlite3.Connection,
+    *,
+    symbol: str,
+    qty: int,
+    side: str,
+    limit_credit: float,
+    run_at: str | None = None,
+    dry_run: bool = False,
+    payload: dict[str, Any],
+) -> TradeRequest:
+    now = utc_now()
+    cur = conn.execute(
+        """
+        INSERT INTO trade_requests (
+            kind, symbol, qty, side, order_type, run_at, status, dry_run,
+            payload, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "option_spread_open",
+            symbol.upper(),
+            qty,
+            side,
+            "limit_credit",
+            run_at,
+            STATUS_QUEUED,
+            int(dry_run),
+            json.dumps({**payload, "limit_credit": limit_credit}, sort_keys=True),
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    return get(conn, int(cur.lastrowid))
+
+
 def get(conn: sqlite3.Connection, request_id: int) -> TradeRequest:
     row = conn.execute(
         "SELECT * FROM trade_requests WHERE id = ?", (request_id,)

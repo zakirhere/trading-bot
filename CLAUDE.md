@@ -22,6 +22,9 @@ phased ramp from backtest → paper → live micro → scale.
   Don't get stuck in illiquid contracts.
 - **No new trades < 5 min before close.** End-of-day liquidity traps.
 - **Earnings exclusion:** don't open positions with earnings before expiry.
+- **Option spreads use limit orders only.** Never submit market orders for option
+  spreads. Entries require limit credit at or above the strategy minimum; exits
+  require limit debit at or below the profit target.
 
 ## Architectural style
 - Python daemon, launchd service, runs as me (personal Mac).
@@ -54,8 +57,12 @@ If paper P&L diverges from live P&L at phase 3, that's a model bug — fix befor
 - SPY $0.60 income credit spread:
   5 total daily entries, scan both call and put credit spreads, expiry 8-42 DTE,
   $1-wide spreads, no duplicate expiry/strike combinations, close winners at
-  50% profit, keep losers open across days, continue opening until open risk is
-  near the $10k simulation cap.
+  50% profit using limit debit orders, keep losers open across days, continue
+  opening until open risk is near the $10k simulation cap. During a trading day,
+  refill closed winners toward 5 active ICL trades, but never open more than 10
+  ICL trades in one day.
+  Current automation slice is paper-only entry autorun behind
+  `TRADEBOT_ICL_PAPER_AUTORUN=1`; 50% close/refill monitoring is not wired yet.
 
 ## Working style with me (Claude)
 - Bias toward caution over cleverness in every architectural decision.

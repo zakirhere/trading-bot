@@ -265,6 +265,17 @@ def test_latest_spread_credit_requires_same_timestamp_for_both_legs():
     assert credit == Decimal("0.21")
 
 
+def test_income_direction_follows_spy_momentum():
+    assert strategy.income_direction(
+        spy_price=Decimal("751"),
+        previous_close=Decimal("750"),
+    ) == "put_credit"
+    assert strategy.income_direction(
+        spy_price=Decimal("749"),
+        previous_close=Decimal("750"),
+    ) == "call_credit"
+
+
 def test_income_backtest_closes_at_50_percent_profit_target():
     result = strategy.run_income_backtest_for_date(
         trading_date=date(2026, 6, 5),

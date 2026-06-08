@@ -15,6 +15,7 @@ def _clear_alpaca_env(monkeypatch):
         "TRADEBOT_CONFIRM_LIVE_ALPACA",
         "NOTIFY_PROVIDER",
         "SLACK_WEBHOOK_URL",
+        "TRADEBOT_ICL_PAPER_AUTORUN",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -117,3 +118,11 @@ def test_notify_config_rejects_non_slack_webhook(tmp_path):
 
     with pytest.raises(RuntimeError, match="SLACK_WEBHOOK_URL"):
         config.load_notify_config(path)
+
+
+def test_strategy_config_accepts_icl_autorun(tmp_path):
+    cfg = config.load_strategy_config(
+        _env_file(tmp_path, TRADEBOT_ICL_PAPER_AUTORUN="1")
+    )
+
+    assert cfg.icl_paper_autorun

@@ -76,3 +76,33 @@ class AlpacaBroker:
             qty=float(j["qty"]),
             raw=j,
         )
+
+    def submit_mleg_limit_order(
+        self,
+        *,
+        qty: int,
+        limit_price: float,
+        legs: list[dict[str, str]],
+        client_order_id: str,
+        time_in_force: str = "day",
+    ) -> OrderResult:
+        payload = {
+            "order_class": "mleg",
+            "qty": str(qty),
+            "type": "limit",
+            "limit_price": f"{limit_price:.2f}",
+            "time_in_force": time_in_force,
+            "client_order_id": client_order_id,
+            "legs": legs,
+        }
+        r = self._client.post("/v2/orders", json=payload)
+        r.raise_for_status()
+        j = r.json()
+        return OrderResult(
+            broker_order_id=j["id"],
+            status=j["status"],
+            symbol=j.get("symbol") or "MLEG",
+            side=j.get("side") or "mleg",
+            qty=float(j["qty"]),
+            raw=j,
+        )

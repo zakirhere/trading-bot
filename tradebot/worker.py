@@ -5,7 +5,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 
-from . import broker, config, db, notify, risk, state
+from . import broker, config, db, notify, risk, state, strategy_runner
 
 log = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ def execute_request(
     *,
     force_closed: bool = False,
 ) -> db.TradeRequest:
-    if req.kind != "stock_market_buy":
+    if req.kind not in {"stock_market_buy", "option_spread_open"}:
         return db.update_status(
             conn,
             req.id,
@@ -49,9 +49,17 @@ def execute_request(
                 reason="market is closed",
             )
 
+        if cfg.is_live and req.kind == "option_spread_open":
+            return db.update_status(
+                conn,
+                req.id,
+                status=db.STATUS_BLOCKED,
+                reason="option spread automation is paper-only",
+            )
+
         current_state = state.load()
         positions = b.get_positions()
-        expected_notional = req.qty * config.MAX_RISK_PER_TRADE_USD
+        expected_notional = expected_risk_usd(req)
         open_risk = sum(abs(float(p.get("market_value", 0))) for p in positions)
         rc = risk.check_pretrade(
             s=current_state,
@@ -94,12 +102,26 @@ def execute_request(
                 reason="dry-run",
             )
 
-        result = b.submit_market_order(
-            symbol=req.symbol,
-            qty=req.qty,
-            side=req.side,
-            client_order_id=client_order_id,
-        )
+        if req.kind == "stock_market_buy":
+            result = b.submit_market_order(
+                symbol=req.symbol,
+                qty=req.qty,
+                side=req.side,
+                client_order_id=client_order_id,
+            )
+            message = f"Submitted market buy {req.qty:g} {req.symbol}."
+        else:
+            result = b.submit_mleg_limit_order(
+                qty=int(req.qty),
+                limit_price=float(req.payload["limit_credit"]),
+                legs=req.payload["legs"],
+                client_order_id=client_order_id,
+            )
+            message = (
+                f"Submitted ICL {req.payload['direction']} "
+                f"{req.payload['short_symbol']}/{req.payload['long_symbol']} "
+                f"for ${float(req.payload['limit_credit']):.2f} credit."
+            )
         with state.transaction() as st:
             st.processed_keys.append(client_order_id)
             st.orders.append(
@@ -118,7 +140,7 @@ def execute_request(
             notify.Alert(
                 level="trade",
                 title="Queued order submitted",
-                message=f"Submitted market buy {req.qty:g} {req.symbol}.",
+                message=message,
                 fields={
                     "request_id": req.id,
                     "status": result.status,
@@ -155,6 +177,12 @@ def execute_request(
         b.close()
 
 
+def expected_risk_usd(req: db.TradeRequest) -> float:
+    if req.kind == "option_spread_open":
+        return float(req.payload.get("max_risk", config.MAX_RISK_PER_TRADE_USD))
+    return req.qty * config.MAX_RISK_PER_TRADE_USD
+
+
 def run_once(conn: sqlite3.Connection, *, force_closed: bool = False) -> list[db.TradeRequest]:
     db.init(conn)
     results = []
@@ -175,6 +203,10 @@ def run_forever(
     log.info("worker loop started poll_seconds=%s db=%s", poll_seconds, config.DB_FILE)
     try:
         while stop_event is None or not stop_event.is_set():
+            try:
+                strategy_runner.run_icl_scheduler_once(conn)
+            except Exception:
+                log.exception("ICL scheduler failed")
             run_once(conn, force_closed=force_closed)
             time.sleep(poll_seconds)
     finally:

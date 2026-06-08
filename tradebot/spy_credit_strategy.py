@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import time as time_module
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -14,6 +15,12 @@ ET = ZoneInfo("America/New_York")
 UTC = ZoneInfo("UTC")
 MARKET_OPEN = time(9, 30)
 MARKET_CLOSE = time(16, 0)
+MAX_DATA_RETRIES = 4
+OPTION_SPREAD_ENTRY_ORDER_TYPE = "limit_credit"
+OPTION_SPREAD_EXIT_ORDER_TYPE = "limit_debit"
+ICL_MIN_ENTRY_CREDIT = Decimal("0.60")
+ICL_TARGET_ACTIVE_TRADES = 5
+ICL_MAX_DAILY_ENTRIES = 10
 
 
 @dataclass(frozen=True)
@@ -197,7 +204,8 @@ class AlpacaMarketData:
         end: datetime,
         timeframe: str,
     ) -> list[dict]:
-        r = self._data.get(
+        r = get_with_retries(
+            self._data,
             f"/v2/stocks/{symbol}/bars",
             params={
                 "start": to_utc_iso(start),
@@ -220,7 +228,8 @@ class AlpacaMarketData:
             return {}
         out: dict[str, list[dict]] = {}
         for chunk in chunks(symbols, 100):
-            r = self._data.get(
+            r = get_with_retries(
+                self._data,
                 "/v1beta1/options/bars",
                 params={
                     "symbols": ",".join(chunk),
@@ -341,8 +350,10 @@ def run_income_backtest_for_date(
     blocked_spreads: set[tuple[str, date, Decimal, Decimal]] = set()
     for entry_time in entry_times:
         spy_price = bar_close_at_or_before(spy_bars, entry_time)
-        candidate = find_best_two_sided_candidate(
+        direction = income_direction(spy_price=spy_price, previous_close=prev_close)
+        candidate = find_best_income_candidate(
             data=data,
+            direction=direction,
             expiries=expiry_pool,
             entry_time=entry_time,
             close_time=day_end,
@@ -410,9 +421,10 @@ def run_income_backtest_for_date(
     return IncomeBacktestResult(trading_date=trading_date, previous_close=prev_close, entries=entries)
 
 
-def find_best_two_sided_candidate(
+def find_best_income_candidate(
     *,
     data: AlpacaMarketData,
+    direction: str,
     expiries: list[date],
     entry_time: datetime,
     close_time: datetime,
@@ -424,22 +436,21 @@ def find_best_two_sided_candidate(
     blocked_spreads: set[tuple[str, date, Decimal, Decimal]],
 ) -> SpreadCandidate | None:
     candidates: list[SpreadCandidate] = []
-    for direction in ("call_credit", "put_credit"):
-        for expiry in ranked_expiries(expiries, entry_time, rng):
-            candidate = find_best_candidate(
-                data=data,
-                direction=direction,
-                expiration_date=expiry,
-                entry_time=entry_time,
-                close_time=close_time,
-                target_min=target_min,
-                target_max=target_max,
-                reject_at_or_above=reject_at_or_above,
-                spread_width=spread_width,
-                blocked_spreads=blocked_spreads,
-            )
-            if candidate:
-                candidates.append(candidate)
+    for expiry in ranked_expiries(expiries, entry_time, rng):
+        candidate = find_best_candidate(
+            data=data,
+            direction=direction,
+            expiration_date=expiry,
+            entry_time=entry_time,
+            close_time=close_time,
+            target_min=target_min,
+            target_max=target_max,
+            reject_at_or_above=reject_at_or_above,
+            spread_width=spread_width,
+            blocked_spreads=blocked_spreads,
+        )
+        if candidate:
+            candidates.append(candidate)
     if not candidates:
         return None
     target = money((target_min + target_max) / Decimal("2"))
@@ -452,6 +463,42 @@ def find_best_two_sided_candidate(
             c.short_strike,
         ),
     )
+
+
+def income_direction(*, spy_price: Decimal, previous_close: Decimal) -> str:
+    return "put_credit" if spy_price > previous_close else "call_credit"
+
+
+def opening_legs(candidate: SpreadCandidate) -> list[dict[str, str]]:
+    return [
+        {
+            "symbol": candidate.short_symbol,
+            "ratio_qty": "1",
+            "side": "sell",
+            "position_intent": "sell_to_open",
+        },
+        {
+            "symbol": candidate.long_symbol,
+            "ratio_qty": "1",
+            "side": "buy",
+            "position_intent": "buy_to_open",
+        },
+    ]
+
+
+def candidate_payload(candidate: SpreadCandidate) -> dict:
+    return {
+        "strategy": "ICL",
+        "direction": candidate.direction,
+        "expiration_date": candidate.expiration_date.isoformat(),
+        "short_symbol": candidate.short_symbol,
+        "long_symbol": candidate.long_symbol,
+        "short_strike": str(candidate.short_strike),
+        "long_strike": str(candidate.long_strike),
+        "credit": str(candidate.credit),
+        "max_risk": str(max_risk(candidate)),
+        "legs": opening_legs(candidate),
+    }
 
 
 def find_best_candidate(
@@ -675,3 +722,14 @@ def max_risk(candidate: SpreadCandidate) -> Decimal:
 def chunks(items: list[str], size: int):
     for idx in range(0, len(items), size):
         yield items[idx: idx + size]
+
+
+def get_with_retries(client: httpx.Client, url: str, *, params: dict) -> httpx.Response:
+    for attempt in range(MAX_DATA_RETRIES + 1):
+        response = client.get(url, params=params)
+        if response.status_code != 429 or attempt == MAX_DATA_RETRIES:
+            return response
+        retry_after = response.headers.get("Retry-After")
+        delay = float(retry_after) if retry_after else 2 ** attempt
+        time_module.sleep(delay)
+    return response

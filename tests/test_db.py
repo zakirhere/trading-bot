@@ -26,6 +26,33 @@ def test_create_and_list_stock_market_buy(tmp_path):
         conn.close()
 
 
+def test_create_option_spread_open(tmp_path):
+    conn = _conn(tmp_path)
+    try:
+        req = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.60,
+            payload={
+                "strategy": "ICL",
+                "direction": "call_credit",
+                "legs": [],
+                "max_risk": "40.00",
+            },
+        )
+
+        assert req.kind == "option_spread_open"
+        assert req.symbol == "SPY"
+        assert req.side == "sell"
+        assert req.order_type == "limit_credit"
+        assert req.payload["strategy"] == "ICL"
+        assert req.payload["limit_credit"] == 0.60
+    finally:
+        conn.close()
+
+
 def test_due_requests_only_returns_due_queued(tmp_path):
     conn = _conn(tmp_path)
     now = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc)
