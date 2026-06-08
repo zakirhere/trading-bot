@@ -231,3 +231,71 @@ def test_execute_option_spread_blocks_out_of_band_requote(tmp_path, monkeypatch)
         assert updated.reason == "requote credit 0.54 > target max 0.22"
     finally:
         conn.close()
+
+
+def test_execute_option_spread_blocks_existing_leg_symbol(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    fake_state = state.State()
+    submitted = {"called": False}
+
+    class FakeBroker:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        def get_account(self):
+            return {"trading_blocked": False, "account_blocked": False}
+
+        def get_clock(self):
+            return {"is_open": True}
+
+        def get_positions(self):
+            return [
+                {
+                    "asset_class": "us_option",
+                    "symbol": "SPY260630C00761000",
+                    "qty": "1",
+                }
+            ]
+
+        def submit_mleg_limit_order(self, **kwargs):
+            submitted["called"] = True
+            raise AssertionError("should not submit a spread with an already-open leg")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(worker.config, "load_alpaca_config", lambda: SimpleNamespace(is_live=False))
+    monkeypatch.setattr(worker.broker, "AlpacaBroker", FakeBroker)
+    monkeypatch.setattr(worker.state, "load", lambda: fake_state)
+    monkeypatch.setattr(worker.notify, "send", lambda alert: None)
+
+    try:
+        req = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.20,
+            payload={
+                "strategy": "DCA",
+                "direction": "call_credit",
+                "short_symbol": "SPY260630C00761000",
+                "long_symbol": "SPY260630C00762000",
+                "legs": [
+                    {"symbol": "SPY260630C00761000", "side": "sell"},
+                    {"symbol": "SPY260630C00762000", "side": "buy"},
+                ],
+                "max_risk": "80.00",
+                "target_min": "0.20",
+                "target_max": "0.22",
+                "reject_at_or_above": "0.25",
+            },
+        )
+
+        updated = worker.execute_request(conn, req)
+
+        assert not submitted["called"]
+        assert updated.status == db.STATUS_BLOCKED
+        assert updated.reason == "spread leg already open: SPY260630C00761000"
+    finally:
+        conn.close()

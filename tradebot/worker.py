@@ -76,6 +76,31 @@ def credit_band_check(req: db.TradeRequest, credit: Decimal) -> risk.RiskCheck:
     return risk.RiskCheck(True)
 
 
+def duplicate_open_option_leg_check(req: db.TradeRequest, positions: list[dict]) -> risk.RiskCheck:
+    if req.kind != "option_spread_open":
+        return risk.RiskCheck(True)
+    open_symbols = {
+        str(position.get("symbol"))
+        for position in positions
+        if position.get("asset_class") == "us_option"
+        and abs(float(position.get("qty") or 0)) > 0
+        and position.get("symbol")
+    }
+    duplicate_symbols = sorted(
+        {
+            str(leg.get("symbol"))
+            for leg in req.payload.get("legs", [])
+            if leg.get("symbol") in open_symbols
+        }
+    )
+    if duplicate_symbols:
+        return risk.RiskCheck(
+            False,
+            f"spread leg already open: {', '.join(duplicate_symbols)}",
+        )
+    return risk.RiskCheck(True)
+
+
 def execute_request(
     conn: sqlite3.Connection,
     req: db.TradeRequest,
@@ -121,6 +146,14 @@ def execute_request(
 
         current_state = state.load()
         positions = b.get_positions()
+        duplicate_check = duplicate_open_option_leg_check(req, positions)
+        if not duplicate_check.allowed:
+            return db.update_status(
+                conn,
+                req.id,
+                status=db.STATUS_BLOCKED,
+                reason=duplicate_check.reason,
+            )
         expected_notional = expected_risk_usd(req)
         open_risk = risk.estimate_open_risk_usd(positions)
         rc = risk.check_pretrade(

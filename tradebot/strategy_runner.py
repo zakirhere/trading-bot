@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
 
-from . import config, db, notify, spy_credit_strategy
+from . import broker, config, db, notify, spy_credit_strategy
 
 ORB_UNIVERSE = ("SPY", "QQQ", "NVDA", "TSLA", "MSFT")
 NEVER_TRADE_SYMBOLS = {"AAPL"}
@@ -48,9 +48,15 @@ def run_icl_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
     if due_slot is None:
         return None
 
+    blocked_symbols = open_option_symbols(alpaca_cfg)
     data = spy_credit_strategy.AlpacaMarketData(alpaca_cfg)
     try:
-        candidate = select_icl_candidate(data=data, now_et=now_et, existing=existing)
+        candidate = select_icl_candidate(
+            data=data,
+            now_et=now_et,
+            existing=existing,
+            blocked_symbols=blocked_symbols,
+        )
     finally:
         data.close()
     if candidate is None:
@@ -97,9 +103,15 @@ def run_dca_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
     if due_slot is None:
         return None
 
+    blocked_symbols = open_option_symbols(alpaca_cfg)
     data = spy_credit_strategy.AlpacaMarketData(alpaca_cfg)
     try:
-        candidate = select_dca_candidate(data=data, now_et=now_et, existing=existing)
+        candidate = select_dca_candidate(
+            data=data,
+            now_et=now_et,
+            existing=existing,
+            blocked_symbols=blocked_symbols,
+        )
     finally:
         data.close()
     if candidate is None:
@@ -171,6 +183,7 @@ def select_icl_candidate(
     data: spy_credit_strategy.AlpacaMarketData,
     now_et: datetime,
     existing: list[db.TradeRequest],
+    blocked_symbols: set[str] | None = None,
 ) -> spy_credit_strategy.SpreadCandidate | None:
     day_start = datetime.combine(now_et.date(), spy_credit_strategy.MARKET_OPEN, spy_credit_strategy.ET)
     spy_bars = data.stock_bars(symbol="SPY", start=day_start, end=now_et, timeframe="1Min")
@@ -197,6 +210,7 @@ def select_icl_candidate(
             reject_at_or_above=Decimal("0.65"),
             spread_width=Decimal("1"),
             blocked_spreads=blocked,
+            blocked_symbols=blocked_symbols,
         )
         if candidate:
             return candidate
@@ -208,6 +222,7 @@ def select_dca_candidate(
     data: spy_credit_strategy.AlpacaMarketData,
     now_et: datetime,
     existing: list[db.TradeRequest],
+    blocked_symbols: set[str] | None = None,
 ) -> spy_credit_strategy.SpreadCandidate | None:
     day_start = datetime.combine(now_et.date(), spy_credit_strategy.MARKET_OPEN, spy_credit_strategy.ET)
     spy_bars = data.stock_bars(symbol="SPY", start=day_start, end=now_et, timeframe="1Min")
@@ -235,6 +250,7 @@ def select_dca_candidate(
             reject_at_or_above=Decimal("0.25"),
             spread_width=Decimal("1"),
             blocked_spreads=blocked,
+            blocked_symbols=blocked_symbols,
         )
         if candidate:
             return candidate
@@ -274,6 +290,20 @@ def blocked_spreads(requests: list[db.TradeRequest]) -> set[tuple[str, date, Dec
             )
         )
     return blocked
+
+
+def open_option_symbols(alpaca_cfg: config.AlpacaConfig) -> set[str]:
+    b = broker.AlpacaBroker(alpaca_cfg)
+    try:
+        return {
+            str(position.get("symbol"))
+            for position in b.get_positions()
+            if position.get("asset_class") == "us_option"
+            and abs(float(position.get("qty") or 0)) > 0
+            and position.get("symbol")
+        }
+    finally:
+        b.close()
 
 
 def active_strategy_requests(requests: list[db.TradeRequest]) -> list[db.TradeRequest]:

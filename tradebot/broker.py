@@ -71,7 +71,7 @@ class AlpacaBroker:
             "client_order_id": client_order_id,
         }
         r = self._client.post("/v2/orders", json=payload)
-        r.raise_for_status()
+        raise_for_status_with_body(r)
         j = r.json()
         return OrderResult(
             broker_order_id=j["id"],
@@ -101,7 +101,7 @@ class AlpacaBroker:
             "legs": legs,
         }
         r = self._client.post("/v2/orders", json=payload)
-        r.raise_for_status()
+        raise_for_status_with_body(r)
         j = r.json()
         return OrderResult(
             broker_order_id=j["id"],
@@ -111,3 +111,13 @@ class AlpacaBroker:
             qty=float(j["qty"]),
             raw=j,
         )
+
+
+def raise_for_status_with_body(response: httpx.Response) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body = response.text.strip()
+        if body:
+            raise RuntimeError(f"Alpaca API error {response.status_code}: {body}") from exc
+        raise

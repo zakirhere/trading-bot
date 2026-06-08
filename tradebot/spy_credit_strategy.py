@@ -611,6 +611,7 @@ def find_best_candidate_from_latest_quotes(
     reject_at_or_above: Decimal,
     spread_width: Decimal,
     blocked_spreads: set[tuple[str, date, Decimal, Decimal]] | None = None,
+    blocked_symbols: set[str] | None = None,
 ) -> SpreadCandidate | None:
     option_type = "call" if direction == "call_credit" else "put"
     contracts = data.option_contracts(
@@ -633,6 +634,8 @@ def find_best_candidate_from_latest_quotes(
     quotes = data.option_latest_quotes(symbols=symbols)
     candidates: list[SpreadCandidate] = []
     for short, long in pairs:
+        if blocked_symbols and (short.symbol in blocked_symbols or long.symbol in blocked_symbols):
+            continue
         candidate_key = spread_key(
             direction=direction,
             expiration_date=expiration_date,

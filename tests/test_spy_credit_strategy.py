@@ -177,6 +177,26 @@ class IncomeStrategyData:
         }
 
 
+class LatestQuoteData:
+    def option_contracts(self, *, underlying, expiration_gte, expiration_lte, option_type):
+        assert underlying == "SPY"
+        assert expiration_gte == expiration_lte
+        return [
+            strategy.OptionContract("BLOCKED_SHORT", expiration_gte, Decimal("700"), option_type),
+            strategy.OptionContract("BLOCKED_LONG", expiration_gte, Decimal("699"), option_type),
+            strategy.OptionContract("OPEN_SHORT", expiration_gte, Decimal("690"), option_type),
+            strategy.OptionContract("OPEN_LONG", expiration_gte, Decimal("689"), option_type),
+        ]
+
+    def option_latest_quotes(self, *, symbols):
+        return {
+            "BLOCKED_SHORT": {"bp": 1.00},
+            "BLOCKED_LONG": {"ap": 0.80},
+            "OPEN_SHORT": {"bp": 1.00},
+            "OPEN_LONG": {"ap": 0.80},
+        }
+
+
 def test_find_best_candidate_rejects_25_credit_and_accepts_21():
     data = FakeData()
     entry_time = datetime(2026, 6, 5, 10, 30, tzinfo=ET)
@@ -297,3 +317,20 @@ def test_income_backtest_closes_at_50_percent_profit_target():
     assert result.realized_pnl == Decimal("30.00")
     assert result.unrealized_pnl == Decimal("0.00")
     assert result.open_risk_at_close == Decimal("0.00")
+
+
+def test_latest_quote_selection_skips_blocked_open_symbols():
+    candidate = strategy.find_best_candidate_from_latest_quotes(
+        data=LatestQuoteData(),
+        direction="put_credit",
+        expiration_date=date(2026, 6, 26),
+        target_min=Decimal("0.20"),
+        target_max=Decimal("0.22"),
+        reject_at_or_above=Decimal("0.25"),
+        spread_width=Decimal("1"),
+        blocked_symbols={"BLOCKED_LONG"},
+    )
+
+    assert candidate is not None
+    assert candidate.short_symbol == "OPEN_SHORT"
+    assert candidate.long_symbol == "OPEN_LONG"
