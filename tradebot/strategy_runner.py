@@ -165,7 +165,6 @@ def select_icl_candidate(
     existing: list[db.TradeRequest],
 ) -> spy_credit_strategy.SpreadCandidate | None:
     day_start = datetime.combine(now_et.date(), spy_credit_strategy.MARKET_OPEN, spy_credit_strategy.ET)
-    day_end = datetime.combine(now_et.date(), spy_credit_strategy.MARKET_CLOSE, spy_credit_strategy.ET)
     spy_bars = data.stock_bars(symbol="SPY", start=day_start, end=now_et, timeframe="1Min")
     if not spy_bars:
         return None
@@ -180,19 +179,20 @@ def select_icl_candidate(
     )
     blocked = blocked_spreads(existing)
     rng = random.Random(int(now_et.strftime("%Y%m%d")))
-    return spy_credit_strategy.find_best_income_candidate(
-        data=data,
-        direction=direction,
-        expiries=expiries,
-        entry_time=now_et,
-        close_time=day_end,
-        rng=rng,
-        target_min=Decimal("0.58"),
-        target_max=Decimal("0.62"),
-        reject_at_or_above=Decimal("0.65"),
-        spread_width=Decimal("1"),
-        blocked_spreads=blocked,
-    )
+    for expiry in spy_credit_strategy.ranked_expiries(expiries, now_et, rng):
+        candidate = spy_credit_strategy.find_best_candidate_from_latest_quotes(
+            data=data,
+            direction=direction,
+            expiration_date=expiry,
+            target_min=Decimal("0.58"),
+            target_max=Decimal("0.62"),
+            reject_at_or_above=Decimal("0.65"),
+            spread_width=Decimal("1"),
+            blocked_spreads=blocked,
+        )
+        if candidate:
+            return candidate
+    return None
 
 
 def select_dca_candidate(
@@ -202,7 +202,6 @@ def select_dca_candidate(
     existing: list[db.TradeRequest],
 ) -> spy_credit_strategy.SpreadCandidate | None:
     day_start = datetime.combine(now_et.date(), spy_credit_strategy.MARKET_OPEN, spy_credit_strategy.ET)
-    day_end = datetime.combine(now_et.date(), spy_credit_strategy.MARKET_CLOSE, spy_credit_strategy.ET)
     spy_bars = data.stock_bars(symbol="SPY", start=day_start, end=now_et, timeframe="1Min")
     if not spy_bars:
         return None
@@ -219,12 +218,10 @@ def select_dca_candidate(
     rng = random.Random(int(now_et.strftime("%Y%m%d")))
     candidate: spy_credit_strategy.SpreadCandidate | None = None
     for expiry in spy_credit_strategy.ranked_expiries(expiries, now_et, rng):
-        candidate = spy_credit_strategy.find_best_candidate(
+        candidate = spy_credit_strategy.find_best_candidate_from_latest_quotes(
             data=data,
             direction=direction,
             expiration_date=expiry,
-            entry_time=now_et,
-            close_time=day_end,
             target_min=Decimal("0.20"),
             target_max=Decimal("0.22"),
             reject_at_or_above=Decimal("0.25"),

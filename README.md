@@ -44,6 +44,21 @@ The SPY income-credit backtest scans 5 total daily entries, checks both call and
 put credit spreads, targets roughly $0.60 credit on $1-wide spreads, prevents
 duplicate expiry/strike combinations, and marks winners closed at 50% profit.
 
+## Alpaca Data Feeds
+
+The paper/basic Alpaca data plan has entitlement limits. Live automation must
+request:
+
+```text
+stock bars: feed=iex
+latest option quotes: feed=indicative
+```
+
+Historical option bars do not accept a `feed` query parameter. Current/future
+OPRA-style option bars without the right subscription return `403 Forbidden`;
+option bars with an unexpected feed parameter return `400 Bad Request`. For
+live paper selection, use latest indicative option quotes instead.
+
 The launchd job is also dry-run by default. A real paper order requires running
 the daemon without `--dry-run`.
 

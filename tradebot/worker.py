@@ -9,6 +9,16 @@ from . import broker, config, db, notify, risk, state, strategy_runner
 
 log = logging.getLogger(__name__)
 
+_BROKER_WORKING_STATUSES = {
+    "accepted",
+    "pending_new",
+    "new",
+    "partially_filled",
+    "pending_cancel",
+    "pending_replace",
+}
+_BROKER_ERROR_STATUSES = {"canceled", "expired", "rejected", "failed", "done_for_day"}
+
 
 def _client_order_id(req: db.TradeRequest) -> str:
     return f"queue_{req.id}_{req.kind}_{req.symbol}"
@@ -184,6 +194,63 @@ def expected_risk_usd(req: db.TradeRequest) -> float:
     return req.qty * config.MAX_RISK_PER_TRADE_USD
 
 
+def _update_state_order_status(broker_order_id: str, status: str) -> None:
+    with state.transaction() as st:
+        for order in st.orders:
+            if order.broker_order_id == broker_order_id:
+                order.status = status
+
+
+def reconcile_submitted_orders(conn: sqlite3.Connection) -> list[db.TradeRequest]:
+    cfg = config.load_alpaca_config()
+    b = broker.AlpacaBroker(cfg)
+    changed: list[db.TradeRequest] = []
+    try:
+        for req in db.list_requests_by_status(conn, status=db.STATUS_SUBMITTED, limit=100):
+            if not req.broker_order_id:
+                continue
+            order = b.get_order(req.broker_order_id)
+            broker_status = str(order.get("status") or "")
+            if not broker_status or broker_status == req.reason:
+                continue
+            if broker_status == "filled":
+                updated = db.update_status(
+                    conn,
+                    req.id,
+                    status=db.STATUS_FILLED,
+                    reason="filled",
+                )
+                _update_state_order_status(req.broker_order_id, "filled")
+            elif broker_status in _BROKER_ERROR_STATUSES:
+                updated = db.update_status(
+                    conn,
+                    req.id,
+                    status=db.STATUS_ERROR,
+                    reason=broker_status,
+                )
+                _update_state_order_status(req.broker_order_id, broker_status)
+            elif broker_status in _BROKER_WORKING_STATUSES:
+                updated = db.update_status(
+                    conn,
+                    req.id,
+                    status=db.STATUS_SUBMITTED,
+                    reason=broker_status,
+                )
+                _update_state_order_status(req.broker_order_id, broker_status)
+            else:
+                updated = db.update_status(
+                    conn,
+                    req.id,
+                    status=db.STATUS_SUBMITTED,
+                    reason=broker_status,
+                )
+                _update_state_order_status(req.broker_order_id, broker_status)
+            changed.append(updated)
+    finally:
+        b.close()
+    return changed
+
+
 def run_once(conn: sqlite3.Connection, *, force_closed: bool = False) -> list[db.TradeRequest]:
     db.init(conn)
     results = []
@@ -217,6 +284,10 @@ def run_forever(
             except Exception:
                 log.exception("ORB observer failed")
             run_once(conn, force_closed=force_closed)
+            try:
+                reconcile_submitted_orders(conn)
+            except Exception:
+                log.exception("order status reconciliation failed")
             time.sleep(poll_seconds)
     finally:
         conn.close()

@@ -27,6 +27,11 @@ phased ramp from backtest → paper → live micro → scale.
   require limit debit at or below the profit target.
 - **Never trade AAPL.** User works for Apple. AAPL is excluded from manual stock
   orders, stock strategies, and future scanners.
+- **Alpaca data feed constraints matter.** Paper/basic data requires
+  `feed=iex` for stock bars and `feed=indicative` for latest option quotes.
+  Historical option bars do not accept `feed`; current/future option bars can
+  return 403 without OPRA entitlement. Live schedulers should select from
+  latest indicative quotes.
 
 ## Architectural style
 - Python daemon, launchd service, runs as me (personal Mac).

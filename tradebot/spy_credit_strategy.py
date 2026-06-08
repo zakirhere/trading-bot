@@ -212,6 +212,7 @@ class AlpacaMarketData:
                 "end": to_utc_iso(end),
                 "timeframe": timeframe,
                 "adjustment": "raw",
+                "feed": "iex",
             },
         )
         r.raise_for_status()
@@ -240,6 +241,23 @@ class AlpacaMarketData:
             )
             r.raise_for_status()
             out.update(r.json().get("bars", {}))
+        return out
+
+    def option_latest_quotes(self, *, symbols: list[str]) -> dict[str, dict]:
+        if not symbols:
+            return {}
+        out: dict[str, dict] = {}
+        for chunk in chunks(symbols, 100):
+            r = get_with_retries(
+                self._data,
+                "/v1beta1/options/quotes/latest",
+                params={
+                    "symbols": ",".join(chunk),
+                    "feed": "indicative",
+                },
+            )
+            r.raise_for_status()
+            out.update(r.json().get("quotes", {}))
         return out
 
 
@@ -583,6 +601,81 @@ def find_best_candidate(
     )
 
 
+def find_best_candidate_from_latest_quotes(
+    *,
+    data: AlpacaMarketData,
+    direction: str,
+    expiration_date: date,
+    target_min: Decimal,
+    target_max: Decimal,
+    reject_at_or_above: Decimal,
+    spread_width: Decimal,
+    blocked_spreads: set[tuple[str, date, Decimal, Decimal]] | None = None,
+) -> SpreadCandidate | None:
+    option_type = "call" if direction == "call_credit" else "put"
+    contracts = data.option_contracts(
+        underlying="SPY",
+        expiration_gte=expiration_date,
+        expiration_lte=expiration_date,
+        option_type=option_type,
+    )
+    by_strike = {c.strike_price: c for c in contracts}
+    pairs: list[tuple[OptionContract, OptionContract]] = []
+    for short in contracts:
+        long_strike = short.strike_price + spread_width if direction == "call_credit" else short.strike_price - spread_width
+        long = by_strike.get(long_strike)
+        if long:
+            pairs.append((short, long))
+    if not pairs:
+        return None
+
+    symbols = sorted({contract.symbol for pair in pairs for contract in pair})
+    quotes = data.option_latest_quotes(symbols=symbols)
+    candidates: list[SpreadCandidate] = []
+    for short, long in pairs:
+        candidate_key = spread_key(
+            direction=direction,
+            expiration_date=expiration_date,
+            short_strike=short.strike_price,
+            long_strike=long.strike_price,
+        )
+        if blocked_spreads and candidate_key in blocked_spreads:
+            continue
+        short_quote = quotes.get(short.symbol)
+        long_quote = quotes.get(long.symbol)
+        if not short_quote or not long_quote:
+            continue
+        short_bid = quote_decimal(short_quote, "bp")
+        long_ask = quote_decimal(long_quote, "ap")
+        if short_bid is None or long_ask is None:
+            continue
+        credit = money(short_bid - long_ask)
+        if credit < target_min or credit > target_max or credit >= reject_at_or_above:
+            continue
+        candidates.append(
+            SpreadCandidate(
+                direction=direction,
+                expiration_date=expiration_date,
+                short_symbol=short.symbol,
+                long_symbol=long.symbol,
+                short_strike=short.strike_price,
+                long_strike=long.strike_price,
+                credit=credit,
+                close_credit=None,
+            )
+        )
+    if not candidates:
+        return None
+    target = target_min
+    return min(
+        candidates,
+        key=lambda c: (
+            abs(c.credit - target),
+            abs(c.short_strike - c.long_strike),
+            c.expiration_date,
+            c.short_strike,
+        ),
+    )
 def spread_key(
     *,
     direction: str,
@@ -717,6 +810,19 @@ def money(value: Decimal) -> Decimal:
 
 def max_risk(candidate: SpreadCandidate) -> Decimal:
     return money((candidate.width - candidate.credit) * Decimal("100"))
+
+
+def quote_decimal(quote: dict, key: str) -> Decimal | None:
+    value = quote.get(key)
+    if value is None:
+        return None
+    try:
+        decimal = Decimal(str(value))
+    except Exception:
+        return None
+    if decimal <= 0:
+        return None
+    return decimal
 
 
 def chunks(items: list[str], size: int):

@@ -104,6 +104,27 @@ def test_update_status_records_order_metadata(tmp_path):
         conn.close()
 
 
+def test_list_requests_by_status(tmp_path):
+    conn = _conn(tmp_path)
+    try:
+        queued = db.create_stock_market_buy(conn, symbol="MSFT", qty=1)
+        submitted = db.create_stock_market_buy(conn, symbol="NVDA", qty=1)
+        db.update_status(
+            conn,
+            submitted.id,
+            status=db.STATUS_SUBMITTED,
+            broker_order_id="broker-1",
+            reason="pending_new",
+        )
+
+        requests = db.list_requests_by_status(conn, status=db.STATUS_SUBMITTED)
+
+        assert [r.id for r in requests] == [submitted.id]
+        assert queued.id not in [r.id for r in requests]
+    finally:
+        conn.close()
+
+
 def test_strategy_events_roundtrip(tmp_path):
     conn = _conn(tmp_path)
     try:

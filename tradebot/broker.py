@@ -48,6 +48,11 @@ class AlpacaBroker:
         r.raise_for_status()
         return r.json()
 
+    def get_order(self, order_id: str) -> dict[str, Any]:
+        r = self._client.get(f"/v2/orders/{order_id}", params={"nested": "true"})
+        r.raise_for_status()
+        return r.json()
+
     def submit_market_order(
         self,
         *,

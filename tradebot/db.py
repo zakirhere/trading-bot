@@ -235,6 +235,24 @@ def list_requests(conn: sqlite3.Connection, *, limit: int = 100) -> list[TradeRe
     return [_row_to_request(row) for row in rows]
 
 
+def list_requests_by_status(
+    conn: sqlite3.Connection,
+    *,
+    status: str,
+    limit: int = 100,
+) -> list[TradeRequest]:
+    rows = conn.execute(
+        """
+        SELECT * FROM trade_requests
+        WHERE status = ?
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (status, limit),
+    ).fetchall()
+    return [_row_to_request(row) for row in rows]
+
+
 def due_requests(conn: sqlite3.Connection, *, now: str | None = None) -> list[TradeRequest]:
     now = now or utc_now()
     rows = conn.execute(
