@@ -88,3 +88,47 @@ def test_near_close_blocks():
     )
     assert not rc.allowed
     assert "close" in rc.reason
+
+
+def test_estimate_open_risk_pairs_call_credit_spread():
+    positions = [
+        {
+            "symbol": "SPY260630C00706000",
+            "asset_class": "us_option",
+            "qty": "-1",
+            "market_value": "-4037",
+        },
+        {
+            "symbol": "SPY260630C00707000",
+            "asset_class": "us_option",
+            "qty": "1",
+            "market_value": "3788",
+        },
+    ]
+
+    assert risk.estimate_open_risk_usd(positions) == 100.0
+
+
+def test_estimate_open_risk_pairs_put_credit_spread_and_counts_equity():
+    positions = [
+        {
+            "symbol": "MSFT",
+            "asset_class": "us_equity",
+            "qty": "1",
+            "market_value": "412.44",
+        },
+        {
+            "symbol": "SPY260630P00754000",
+            "asset_class": "us_option",
+            "qty": "-1",
+            "market_value": "-1734",
+        },
+        {
+            "symbol": "SPY260630P00753000",
+            "asset_class": "us_option",
+            "qty": "1",
+            "market_value": "1645",
+        },
+    ]
+
+    assert risk.estimate_open_risk_usd(positions) == 512.44

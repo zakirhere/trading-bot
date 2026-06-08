@@ -38,7 +38,8 @@ def run_icl_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
         return None
 
     existing = icl_requests_for_day(conn, now_et)
-    if len(existing) >= spy_credit_strategy.ICL_TARGET_ACTIVE_TRADES:
+    active_existing = active_strategy_requests(existing)
+    if len(active_existing) >= spy_credit_strategy.ICL_TARGET_ACTIVE_TRADES:
         return None
     if len(existing) >= spy_credit_strategy.ICL_MAX_DAILY_ENTRIES:
         return None
@@ -88,7 +89,8 @@ def run_dca_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
         return None
 
     existing = strategy_requests_for_day(conn, now_et, strategy="DCA")
-    if len(existing) >= 5:
+    active_existing = active_strategy_requests(existing)
+    if len(active_existing) >= 5:
         return None
 
     due_slot = next_due_slot(now_et=now_et, existing=existing, target_count=5)
@@ -272,6 +274,11 @@ def blocked_spreads(requests: list[db.TradeRequest]) -> set[tuple[str, date, Dec
             )
         )
     return blocked
+
+
+def active_strategy_requests(requests: list[db.TradeRequest]) -> list[db.TradeRequest]:
+    inactive_statuses = {db.STATUS_BLOCKED, db.STATUS_ERROR, db.STATUS_DRY_RUN}
+    return [req for req in requests if req.status not in inactive_statuses]
 
 
 def next_due_slot(

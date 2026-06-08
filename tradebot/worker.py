@@ -122,7 +122,7 @@ def execute_request(
         current_state = state.load()
         positions = b.get_positions()
         expected_notional = expected_risk_usd(req)
-        open_risk = sum(abs(float(p.get("market_value", 0))) for p in positions)
+        open_risk = risk.estimate_open_risk_usd(positions)
         rc = risk.check_pretrade(
             s=current_state,
             is_live=cfg.is_live,

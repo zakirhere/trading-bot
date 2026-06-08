@@ -88,6 +88,44 @@ def test_blocked_spreads_uses_payload_identity(tmp_path):
         conn.close()
 
 
+def test_active_strategy_requests_excludes_blocked_error_and_dry_run(tmp_path):
+    conn = _conn(tmp_path)
+    try:
+        filled = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.20,
+            payload={"strategy": "DCA", "legs": []},
+        )
+        filled = db.update_status(conn, filled.id, status=db.STATUS_FILLED, reason="filled")
+        blocked = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.20,
+            payload={"strategy": "DCA", "legs": []},
+        )
+        blocked = db.update_status(conn, blocked.id, status=db.STATUS_BLOCKED, reason="test")
+        errored = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.20,
+            payload={"strategy": "DCA", "legs": []},
+        )
+        errored = db.update_status(conn, errored.id, status=db.STATUS_ERROR, reason="test")
+
+        active = strategy_runner.active_strategy_requests([filled, blocked, errored])
+
+        assert [req.id for req in active] == [filled.id]
+    finally:
+        conn.close()
+
+
 class OrbData:
     def stock_bars(self, *, symbol, start, end, timeframe):
         assert symbol != "AAPL"
