@@ -61,9 +61,11 @@ If paper P&L diverges from live P&L at phase 3, that's a model bug — fix befor
 - Hosting: laptop + launchd, or cloud (laptop = simpler, cloud = always-on)
 
 ## Strategy candidates under simulation
-- SPY directional $0.20 credit spread DCA:
+- SPY directional credit spread DCA:
   5 random daily entries, direction from SPY green/red vs previous close, expiry
-  8-42 DTE, $1-wide spreads, no duplicate expiry/strike combinations.
+  8-42 DTE, $1-wide spreads, no duplicate expiry/strike combinations. Select
+  spreads quoted at $0.18-$0.22 credit and submit limit-credit orders $0.02 over
+  the quote, i.e. $0.20-$0.24 limit credit.
 - SPY $0.60 income credit spread:
   5 total daily entries, scan both call and put credit spreads, expiry 8-42 DTE,
   $1-wide spreads, no duplicate expiry/strike combinations, close winners at

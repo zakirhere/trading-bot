@@ -126,6 +126,11 @@ def test_active_strategy_requests_excludes_blocked_error_and_dry_run(tmp_path):
         conn.close()
 
 
+def test_dca_limit_credit_chases_two_cents_over_quote():
+    assert strategy_runner.dca_limit_credit(Decimal("0.18")) == Decimal("0.20")
+    assert strategy_runner.dca_limit_credit(Decimal("0.22")) == Decimal("0.24")
+
+
 class OrbData:
     def stock_bars(self, *, symbol, start, end, timeframe):
         assert symbol != "AAPL"

@@ -12,6 +12,10 @@ ORB_UNIVERSE = ("SPY", "QQQ", "NVDA", "TSLA", "MSFT")
 NEVER_TRADE_SYMBOLS = {"AAPL"}
 ORB_RANGE_END = time(9, 45)
 ORB_ENTRY_CUTOFF = time(11, 30)
+DCA_TARGET_MIN = Decimal("0.18")
+DCA_TARGET_MAX = Decimal("0.22")
+DCA_LIMIT_CREDIT_MARKUP = Decimal("0.02")
+DCA_REJECT_AT_OR_ABOVE = Decimal("0.25")
 
 
 @dataclass(frozen=True)
@@ -120,9 +124,11 @@ def run_dca_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
     payload = {
         **spy_credit_strategy.candidate_payload(candidate),
         "strategy": "DCA",
-        "target_min": "0.20",
-        "target_max": "0.22",
-        "reject_at_or_above": "0.25",
+        "quoted_credit": str(candidate.credit),
+        "limit_credit_markup": str(DCA_LIMIT_CREDIT_MARKUP),
+        "target_min": str(DCA_TARGET_MIN),
+        "target_max": str(DCA_TARGET_MAX),
+        "reject_at_or_above": str(DCA_REJECT_AT_OR_ABOVE),
         "slot_time": due_slot.isoformat(),
         "selected_at": now_et.isoformat(),
     }
@@ -131,7 +137,7 @@ def run_dca_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
         symbol="SPY",
         qty=1,
         side="sell",
-        limit_credit=float(candidate.credit),
+        limit_credit=float(dca_limit_credit(candidate.credit)),
         dry_run=False,
         payload=payload,
     )
@@ -246,9 +252,9 @@ def select_dca_candidate(
             data=data,
             direction=direction,
             expiration_date=expiry,
-            target_min=Decimal("0.20"),
-            target_max=Decimal("0.22"),
-            reject_at_or_above=Decimal("0.25"),
+            target_min=DCA_TARGET_MIN,
+            target_max=DCA_TARGET_MAX,
+            reject_at_or_above=DCA_REJECT_AT_OR_ABOVE,
             spread_width=Decimal("1"),
             blocked_spreads=blocked,
             blocked_symbols=blocked_symbols,
@@ -257,6 +263,10 @@ def select_dca_candidate(
         if candidate:
             return candidate
     return None
+
+
+def dca_limit_credit(quoted_credit: Decimal) -> Decimal:
+    return spy_credit_strategy.money(quoted_credit + DCA_LIMIT_CREDIT_MARKUP)
 
 
 def icl_requests_for_day(conn: sqlite3.Connection, now_et: datetime) -> list[db.TradeRequest]:
