@@ -5,6 +5,34 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_dotenv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def _runtime_env() -> dict[str, str]:
+    return {**_load_dotenv(PROJECT_ROOT / ".env"), **os.environ}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = _runtime_env().get(name, str(default))
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+
+
 # Hardcoded risk caps. Per CLAUDE.md these are guardrails, not knobs —
 # config can only make them tighter via overrides on top, never looser.
 MAX_RISK_PER_TRADE_USD = 500
@@ -13,7 +41,6 @@ MAX_CONCURRENT_POSITIONS = 20
 DAILY_LOSS_LIMIT_PCT = -2.0
 NO_NEW_TRADES_BEFORE_CLOSE_MIN = 5
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATE_DIR = Path.home() / ".tradebot"
 STATE_FILE = STATE_DIR / "state.json"
 DB_FILE = STATE_DIR / "tradebot.sqlite"
@@ -22,8 +49,8 @@ DASHBOARD_TOKEN_FILE = STATE_DIR / "dashboard_token"
 
 KILLSWITCH_HOST = "127.0.0.1"
 KILLSWITCH_PORT = 8765
-SERVICE_HOST = "127.0.0.1"
-SERVICE_PORT = 8787
+SERVICE_HOST = _runtime_env().get("SERVICE_HOST", "127.0.0.1")
+SERVICE_PORT = _env_int("SERVICE_PORT", 8787)
 SERVICE_POLL_SECONDS = 5
 
 
@@ -57,20 +84,6 @@ class StrategyConfig:
     icl_paper_autorun: bool
     dca_paper_autorun: bool
     orb_observe: bool
-
-
-def _load_dotenv(path: Path) -> dict[str, str]:
-    out: dict[str, str] = {}
-    if not path.exists():
-        return out
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        out[k.strip()] = v.strip().strip('"').strip("'")
-    return out
-
 
 def load_alpaca_config(env_path: Path | None = None) -> AlpacaConfig:
     if env_path is None:
