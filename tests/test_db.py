@@ -1,7 +1,5 @@
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from tradebot import db
 
 
@@ -28,11 +26,32 @@ def test_create_and_list_stock_market_buy(tmp_path):
         conn.close()
 
 
-def test_aapl_stock_orders_are_blocked(tmp_path):
+def test_aapl_stock_orders_are_allowed(tmp_path):
     conn = _conn(tmp_path)
     try:
-        with pytest.raises(ValueError, match="AAPL"):
-            db.create_stock_market_buy(conn, symbol="AAPL", qty=1)
+        req = db.create_stock_market_buy(conn, symbol="AAPL", qty=1)
+
+        assert req.symbol == "AAPL"
+    finally:
+        conn.close()
+
+
+def test_aapl_option_spread_orders_are_blocked(tmp_path):
+    conn = _conn(tmp_path)
+    try:
+        try:
+            db.create_option_spread_open(
+                conn,
+                symbol="AAPL",
+                qty=1,
+                side="sell",
+                limit_credit=0.20,
+                payload={"strategy": "TEST", "legs": []},
+            )
+        except ValueError as exc:
+            assert "AAPL options" in str(exc)
+        else:
+            raise AssertionError("AAPL option spread should be blocked")
     finally:
         conn.close()
 
@@ -121,6 +140,33 @@ def test_list_requests_by_status(tmp_path):
 
         assert [r.id for r in requests] == [submitted.id]
         assert queued.id not in [r.id for r in requests]
+    finally:
+        conn.close()
+
+
+def test_list_strategy_spread_requests_filters_by_strategy(tmp_path):
+    conn = _conn(tmp_path)
+    try:
+        dca = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.20,
+            payload={"strategy": "DCA", "legs": []},
+        )
+        db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.60,
+            payload={"strategy": "ICL", "legs": []},
+        )
+
+        requests = db.list_strategy_spread_requests(conn, strategy="DCA")
+
+        assert [r.id for r in requests] == [dca.id]
     finally:
         conn.close()
 

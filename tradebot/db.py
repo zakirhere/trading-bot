@@ -9,7 +9,7 @@ from typing import Any, Iterable
 
 from . import config
 
-NEVER_TRADE_SYMBOLS = {"AAPL"}
+NEVER_TRADE_OPTION_UNDERLYINGS = {"AAPL"}
 
 
 STATUS_QUEUED = "queued"
@@ -149,8 +149,6 @@ def create_stock_market_buy(
     run_at: str | None = None,
     dry_run: bool = False,
 ) -> TradeRequest:
-    if symbol.upper() in NEVER_TRADE_SYMBOLS:
-        raise ValueError(f"{symbol.upper()} is blocked by NEVER_TRADE_SYMBOLS")
     now = utc_now()
     cur = conn.execute(
         """
@@ -188,6 +186,8 @@ def create_option_spread_open(
     dry_run: bool = False,
     payload: dict[str, Any],
 ) -> TradeRequest:
+    if symbol.upper() in NEVER_TRADE_OPTION_UNDERLYINGS:
+        raise ValueError(f"{symbol.upper()} options are blocked by NEVER_TRADE_OPTION_UNDERLYINGS")
     now = utc_now()
     cur = conn.execute(
         """
@@ -249,6 +249,30 @@ def list_requests_by_status(
         LIMIT ?
         """,
         (status, limit),
+    ).fetchall()
+    return [_row_to_request(row) for row in rows]
+
+
+def list_strategy_spread_requests(
+    conn: sqlite3.Connection,
+    *,
+    strategy: str | None = None,
+    limit: int = 100,
+) -> list[TradeRequest]:
+    params: list[Any] = []
+    where = ["kind = 'option_spread_open'"]
+    if strategy is not None:
+        where.append("json_extract(payload, '$.strategy') = ?")
+        params.append(strategy)
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT * FROM trade_requests
+        WHERE {' AND '.join(where)}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        params,
     ).fetchall()
     return [_row_to_request(row) for row in rows]
 

@@ -136,10 +136,62 @@ def _request_row(req: db.TradeRequest) -> str:
     return "<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
 
 
+def _spread_label(req: db.TradeRequest) -> str:
+    payload = req.payload
+    short_symbol = payload.get("short_symbol", "")
+    long_symbol = payload.get("long_symbol", "")
+    if short_symbol and long_symbol:
+        return f"{short_symbol}/{long_symbol}"
+    return ""
+
+
+def _strategy_spread_row(req: db.TradeRequest) -> str:
+    payload = req.payload
+    status = html.escape(req.status)
+    cells = [
+        str(req.id),
+        html.escape(str(payload.get("strategy") or "")),
+        f'<span class="chip status-{status}">{status}</span>',
+        html.escape(str(payload.get("direction") or "")),
+        html.escape(str(payload.get("expiration_date") or "")),
+        f'<span class="mono">{html.escape(_spread_label(req))}</span>',
+        html.escape(str(payload.get("limit_credit", ""))),
+        html.escape(req.reason or ""),
+    ]
+    return "<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
+
+
+def _strategy_spread_dict(req: db.TradeRequest) -> dict[str, Any]:
+    payload = req.payload
+    return {
+        "id": req.id,
+        "strategy": payload.get("strategy"),
+        "status": req.status,
+        "symbol": req.symbol,
+        "direction": payload.get("direction"),
+        "expiration_date": payload.get("expiration_date"),
+        "short_symbol": payload.get("short_symbol"),
+        "long_symbol": payload.get("long_symbol"),
+        "short_strike": payload.get("short_strike"),
+        "long_strike": payload.get("long_strike"),
+        "limit_credit": payload.get("limit_credit"),
+        "quoted_credit": payload.get("quoted_credit", payload.get("credit")),
+        "broker_order_id": req.broker_order_id,
+        "client_order_id": req.client_order_id,
+        "reason": req.reason,
+        "created_at": req.created_at,
+        "updated_at": req.updated_at,
+    }
+
+
 def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) -> str:
     s = state.load()
     requests = db.list_requests(conn, limit=50)
     rows = "\n".join(_request_row(req) for req in requests)
+    spread_rows = "\n".join(
+        _strategy_spread_row(req)
+        for req in db.list_strategy_spread_requests(conn, limit=50)
+    )
     orders = "\n".join(
         "<tr>"
         f"<td>{html.escape(o.submitted_at)}</td>"
@@ -352,6 +404,13 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       </div>
       <div class="tables">
         <section>
+          <h2>Strategy Spreads</h2>
+          <table>
+            <thead><tr><th>ID</th><th>Strategy</th><th>Status</th><th>Direction</th><th>Expiry</th><th>Spread</th><th>Limit Credit</th><th>Reason</th></tr></thead>
+            <tbody>{spread_rows}</tbody>
+          </table>
+        </section>
+        <section>
           <h2>Trade Requests</h2>
           <table>
             <thead><tr><th>ID</th><th>Status</th><th>Kind</th><th>Symbol</th><th>Qty</th><th>Run At</th><th>Reason</th><th>Order ID</th></tr></thead>
@@ -413,6 +472,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/trade-requests":
             self._reply_json(db.as_dicts(db.list_requests(conn)))
+            return
+        if path == "/api/strategy-spreads":
+            self._reply_json(
+                [
+                    _strategy_spread_dict(req)
+                    for req in db.list_strategy_spread_requests(conn, limit=500)
+                ]
+            )
             return
         if path == "/api/trade-journal":
             path = journal.sync_from_db(conn)

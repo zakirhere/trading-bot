@@ -126,9 +126,50 @@ def test_active_strategy_requests_excludes_blocked_error_and_dry_run(tmp_path):
         conn.close()
 
 
+def test_active_strategy_spread_count_is_per_strategy(tmp_path):
+    conn = _conn(tmp_path)
+    try:
+        dca = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.20,
+            payload={"strategy": "DCA", "legs": []},
+        )
+        db.update_status(conn, dca.id, status=db.STATUS_FILLED, reason="filled")
+        blocked_dca = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.20,
+            payload={"strategy": "DCA", "legs": []},
+        )
+        db.update_status(conn, blocked_dca.id, status=db.STATUS_BLOCKED, reason="test")
+        icl = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.60,
+            payload={"strategy": "ICL", "legs": []},
+        )
+        db.update_status(conn, icl.id, status=db.STATUS_SUBMITTED, reason="new")
+
+        assert strategy_runner.active_strategy_spread_count(conn, strategy="DCA") == 1
+        assert strategy_runner.active_strategy_spread_count(conn, strategy="ICL") == 1
+    finally:
+        conn.close()
+
+
 def test_dca_limit_credit_chases_two_cents_over_quote():
     assert strategy_runner.dca_limit_credit(Decimal("0.18")) == Decimal("0.20")
     assert strategy_runner.dca_limit_credit(Decimal("0.22")) == Decimal("0.24")
+
+
+def test_dca_daily_target_is_ten():
+    assert strategy_runner.DCA_DAILY_TARGET_ENTRIES == 10
 
 
 class OrbData:

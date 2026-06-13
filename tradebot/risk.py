@@ -83,8 +83,7 @@ def estimate_open_risk_usd(positions: list[dict]) -> float:
                 total += abs(decimal_value(position.get("market_value")))
             else:
                 option_positions.append(parsed)
-            continue
-        total += abs(decimal_value(position.get("market_value")))
+        continue
 
     paired_symbols: set[str] = set()
     for short in sorted(
@@ -109,6 +108,44 @@ def estimate_open_risk_usd(positions: list[dict]) -> float:
             total += abs(option.market_value)
 
     return float(total)
+
+
+def estimate_position_slots(positions: list[dict]) -> int:
+    option_positions: list[OptionPosition] = []
+    total = 0
+    for position in positions:
+        if position.get("asset_class") != "us_option":
+            if abs(decimal_value(position.get("qty"))) > 0:
+                total += 1
+            continue
+        parsed = parse_option_position(position)
+        if parsed is None:
+            if abs(decimal_value(position.get("qty"))) > 0:
+                total += 1
+            continue
+        option_positions.append(parsed)
+
+    paired_symbols: set[str] = set()
+    for short in sorted(
+        [p for p in option_positions if p.qty < 0],
+        key=lambda p: (p.underlying, p.expiration, p.option_type, p.strike),
+    ):
+        if short.symbol in paired_symbols:
+            continue
+        long = find_vertical_long(short, option_positions, paired_symbols)
+        if long is None:
+            total += 1
+            paired_symbols.add(short.symbol)
+            continue
+        total += 1
+        paired_symbols.add(short.symbol)
+        paired_symbols.add(long.symbol)
+
+    for option in option_positions:
+        if option.symbol not in paired_symbols and option.qty != 0:
+            total += 1
+
+    return total
 
 
 def find_vertical_long(

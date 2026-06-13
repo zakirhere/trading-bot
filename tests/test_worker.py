@@ -172,6 +172,84 @@ def test_execute_option_spread_submits_credit_as_negative_limit(tmp_path, monkey
         conn.close()
 
 
+def test_execute_option_spread_reconciles_duplicate_client_order_id(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    fake_state = state.State()
+
+    class FakeBroker:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        def get_account(self):
+            return {"trading_blocked": False, "account_blocked": False}
+
+        def get_clock(self):
+            return {"is_open": True}
+
+        def get_positions(self):
+            return []
+
+        def submit_mleg_limit_order(self, **kwargs):
+            raise RuntimeError('Alpaca API error 422: {"message":"client_order_id must be unique"}')
+
+        def get_order_by_client_order_id(self, client_order_id):
+            assert client_order_id == "queue_1_option_spread_open_SPY"
+            return {
+                "id": "broker-1",
+                "status": "new",
+                "symbol": "",
+                "side": "",
+                "qty": "1",
+            }
+
+        def close(self):
+            pass
+
+    @contextmanager
+    def fake_transaction():
+        yield fake_state
+
+    monkeypatch.setattr(worker.config, "load_alpaca_config", lambda: SimpleNamespace(is_live=False))
+    monkeypatch.setattr(worker.broker, "AlpacaBroker", FakeBroker)
+    monkeypatch.setattr(worker.state, "load", lambda: fake_state)
+    monkeypatch.setattr(worker.state, "transaction", fake_transaction)
+    monkeypatch.setattr(worker.notify, "send", lambda alert: None)
+    monkeypatch.setattr(worker, "latest_underlying_price_for_request", lambda cfg, req: Decimal("700"))
+    monkeypatch.setattr(worker, "requote_credit_for_request", lambda cfg, req: Decimal("0.20"))
+
+    try:
+        req = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.20,
+            payload={
+                "strategy": "DCA",
+                "direction": "call_credit",
+                "short_symbol": "SPY260630C00706000",
+                "long_symbol": "SPY260630C00707000",
+                "short_strike": "706",
+                "legs": [
+                    {"symbol": "SPY260630C00706000", "side": "sell"},
+                    {"symbol": "SPY260630C00707000", "side": "buy"},
+                ],
+                "max_risk": "80.00",
+                "target_min": "0.17",
+                "target_max": "0.22",
+                "reject_at_or_above": "0.25",
+            },
+        )
+
+        updated = worker.execute_request(conn, req)
+
+        assert updated.status == db.STATUS_SUBMITTED
+        assert updated.reason == "new"
+        assert updated.broker_order_id == "broker-1"
+    finally:
+        conn.close()
+
+
 def test_execute_option_spread_blocks_out_of_band_requote(tmp_path, monkeypatch):
     conn = _conn(tmp_path)
     fake_state = state.State()

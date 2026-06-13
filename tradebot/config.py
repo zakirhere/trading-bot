@@ -37,7 +37,7 @@ def _env_int(name: str, default: int) -> int:
 # config can only make them tighter via overrides on top, never looser.
 MAX_RISK_PER_TRADE_USD = 500
 MAX_TOTAL_OPEN_RISK_USD = 10000
-MAX_CONCURRENT_POSITIONS = 20
+MAX_CONCURRENT_POSITIONS = 40
 DAILY_LOSS_LIMIT_PCT = -2.0
 NO_NEW_TRADES_BEFORE_CLOSE_MIN = 5
 

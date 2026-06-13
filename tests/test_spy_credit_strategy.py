@@ -222,6 +222,30 @@ class LatestQuoteMoneynessData:
         }
 
 
+class LatestQuoteMidpointData:
+    def option_contracts(self, *, underlying, expiration_gte, expiration_lte, option_type):
+        assert underlying == "SPY"
+        assert expiration_gte == expiration_lte
+        return [
+            strategy.OptionContract("CALL_741", expiration_gte, Decimal("741"), option_type),
+            strategy.OptionContract("CALL_742", expiration_gte, Decimal("742"), option_type),
+            strategy.OptionContract("CALL_744", expiration_gte, Decimal("744"), option_type),
+            strategy.OptionContract("CALL_745", expiration_gte, Decimal("745"), option_type),
+            strategy.OptionContract("CALL_749", expiration_gte, Decimal("749"), option_type),
+            strategy.OptionContract("CALL_750", expiration_gte, Decimal("750"), option_type),
+        ]
+
+    def option_latest_quotes(self, *, symbols):
+        return {
+            "CALL_741": {"bp": 3.39, "ap": 3.49},
+            "CALL_742": {"bp": 3.16, "ap": 3.21},
+            "CALL_744": {"bp": 2.61, "ap": 2.66},
+            "CALL_745": {"bp": 2.33, "ap": 2.42},
+            "CALL_749": {"bp": 1.49, "ap": 1.58},
+            "CALL_750": {"bp": 1.32, "ap": 1.37},
+        }
+
+
 def test_find_best_candidate_rejects_25_credit_and_accepts_21():
     data = FakeData()
     entry_time = datetime(2026, 6, 5, 10, 30, tzinfo=ET)
@@ -393,3 +417,23 @@ def test_latest_quote_selection_rejects_itm_put_credit():
     assert candidate is not None
     assert candidate.short_symbol == "OTM_PUT_SHORT"
     assert candidate.short_strike == Decimal("706")
+
+
+def test_latest_quote_selection_can_use_midpoint_and_prefer_farther_otm():
+    candidate = strategy.find_best_candidate_from_latest_quotes(
+        data=LatestQuoteMidpointData(),
+        direction="call_credit",
+        expiration_date=date(2026, 6, 22),
+        target_min=Decimal("0.18"),
+        target_max=Decimal("0.22"),
+        reject_at_or_above=Decimal("0.25"),
+        spread_width=Decimal("1"),
+        underlying_price=Decimal("730.79"),
+        quote_basis=strategy.QUOTE_BASIS_MIDPOINT,
+        prefer_farther_otm=True,
+    )
+
+    assert candidate is not None
+    assert candidate.short_strike == Decimal("749")
+    assert candidate.long_strike == Decimal("750")
+    assert candidate.credit == Decimal("0.19")

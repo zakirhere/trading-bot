@@ -18,6 +18,8 @@ MARKET_CLOSE = time(16, 0)
 MAX_DATA_RETRIES = 4
 OPTION_SPREAD_ENTRY_ORDER_TYPE = "limit_credit"
 OPTION_SPREAD_EXIT_ORDER_TYPE = "limit_debit"
+QUOTE_BASIS_CONSERVATIVE = "conservative"
+QUOTE_BASIS_MIDPOINT = "midpoint"
 ICL_MIN_ENTRY_CREDIT = Decimal("0.60")
 ICL_TARGET_ACTIVE_TRADES = 5
 ICL_MAX_DAILY_ENTRIES = 10
@@ -624,6 +626,8 @@ def find_best_candidate_from_latest_quotes(
     blocked_spreads: set[tuple[str, date, Decimal, Decimal]] | None = None,
     blocked_symbols: set[str] | None = None,
     underlying_price: Decimal | None = None,
+    quote_basis: str = QUOTE_BASIS_CONSERVATIVE,
+    prefer_farther_otm: bool = False,
 ) -> SpreadCandidate | None:
     option_type = "call" if direction == "call_credit" else "put"
     contracts = data.option_contracts(
@@ -666,11 +670,13 @@ def find_best_candidate_from_latest_quotes(
         long_quote = quotes.get(long.symbol)
         if not short_quote or not long_quote:
             continue
-        short_bid = quote_decimal(short_quote, "bp")
-        long_ask = quote_decimal(long_quote, "ap")
-        if short_bid is None or long_ask is None:
+        credit = spread_credit_from_quotes(
+            short_quote=short_quote,
+            long_quote=long_quote,
+            quote_basis=quote_basis,
+        )
+        if credit is None:
             continue
-        credit = money(short_bid - long_ask)
         if credit < target_min or credit > target_max or credit >= reject_at_or_above:
             continue
         candidates.append(
@@ -688,6 +694,11 @@ def find_best_candidate_from_latest_quotes(
     if not candidates:
         return None
     target = target_min
+    if prefer_farther_otm:
+        if candidates[0].direction == "call_credit":
+            return max(candidates, key=lambda c: c.short_strike)
+        if candidates[0].direction == "put_credit":
+            return min(candidates, key=lambda c: c.short_strike)
     return min(
         candidates,
         key=lambda c: (
@@ -697,6 +708,31 @@ def find_best_candidate_from_latest_quotes(
             c.short_strike,
         ),
     )
+
+
+def spread_credit_from_quotes(
+    *,
+    short_quote: dict,
+    long_quote: dict,
+    quote_basis: str = QUOTE_BASIS_CONSERVATIVE,
+) -> Decimal | None:
+    if quote_basis == QUOTE_BASIS_CONSERVATIVE:
+        short_bid = quote_decimal(short_quote, "bp")
+        long_ask = quote_decimal(long_quote, "ap")
+        if short_bid is None or long_ask is None:
+            return None
+        return money(short_bid - long_ask)
+    if quote_basis == QUOTE_BASIS_MIDPOINT:
+        short_bid = quote_decimal(short_quote, "bp")
+        short_ask = quote_decimal(short_quote, "ap")
+        long_bid = quote_decimal(long_quote, "bp")
+        long_ask = quote_decimal(long_quote, "ap")
+        if short_bid is None or short_ask is None or long_bid is None or long_ask is None:
+            return None
+        short_mid = (short_bid + short_ask) / Decimal("2")
+        long_mid = (long_bid + long_ask) / Decimal("2")
+        return money(short_mid - long_mid)
+    raise ValueError(f"unsupported quote_basis={quote_basis!r}")
 
 
 def spread_is_otm(*, direction: str, short_strike: Decimal, underlying_price: Decimal) -> bool:

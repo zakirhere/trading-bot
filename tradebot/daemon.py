@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import signal
 import sys
 import threading
 from datetime import date
 
-from . import api, broker, config, db, journal, killswitch, notify, signals, spy_credit_strategy, state, worker
+from . import api, broker, config, db, journal, killswitch, notify, signals, spy_credit_strategy, spread_audit, state, worker
 
 
 def setup_logging(level: str = "INFO") -> None:
@@ -17,6 +18,7 @@ def setup_logging(level: str = "INFO") -> None:
         datefmt="%Y-%m-%dT%H:%M:%S%z",
         stream=sys.stderr,
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def cmd_halt(reason: str) -> int:
@@ -110,6 +112,42 @@ def cmd_sync_journal() -> int:
     finally:
         conn.close()
     print(f"journal={path}")
+    return 0
+
+
+def cmd_audit_spreads(*, send_notify: bool, json_output: bool) -> int:
+    audit = spread_audit.run()
+    if json_output:
+        print(json.dumps(spread_audit.to_dict(audit), indent=2, sort_keys=True))
+    else:
+        print(
+            "spread_audit="
+            f"ok={audit.ok} "
+            f"paired={len(audit.paired_spreads)} "
+            f"unpaired={len(audit.unpaired_legs)} "
+            f"local_drift={len(audit.local_drift)} "
+            f"option_open_risk=${audit.option_open_risk_usd:.2f} "
+            f"position_slots={audit.position_slots}"
+        )
+        if audit.unpaired_legs:
+            print("unpaired:")
+            for item in audit.unpaired_legs:
+                print(f"  {item.side} {item.symbol} qty={item.qty} market_value={item.market_value}")
+        if audit.local_drift:
+            print("local_drift:")
+            for item in audit.local_drift:
+                print(
+                    f"  request={item.request_id} strategy={item.strategy} "
+                    f"status={item.status} missing={','.join(item.missing_broker_symbols)}"
+                )
+        if audit.unparsable_option_symbols:
+            print("unparsable:")
+            for symbol in audit.unparsable_option_symbols:
+                print(f"  {symbol}")
+
+    if send_notify:
+        sent = spread_audit.notify_if_changed(audit)
+        print(f"notified={sent}")
     return 0
 
 
@@ -370,6 +408,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="process currently due queued trade requests and exit")
     p.add_argument("--sync-journal", action="store_true",
                    help="write the local Markdown trade journal from SQLite and exit")
+    p.add_argument("--audit-spreads", action="store_true",
+                   help="audit option spread pairing and broker/local drift")
+    p.add_argument("--notify", action="store_true",
+                   help="send configured notification for commands that support it")
+    p.add_argument("--json", action="store_true",
+                   help="emit JSON for commands that support it")
     p.add_argument("--backtest-spy-credit", metavar="YYYY-MM-DD",
                    help="backtest the SPY credit-spread DCA scanner for one trading date")
     p.add_argument("--backtest-spy-income-credit", metavar="YYYY-MM-DD",
@@ -394,6 +438,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run_worker_once(force_closed=args.force_closed)
     if args.sync_journal:
         return cmd_sync_journal()
+    if args.audit_spreads:
+        return cmd_audit_spreads(send_notify=args.notify, json_output=args.json)
     if args.backtest_spy_credit:
         return cmd_backtest_spy_credit(
             trading_date=date.fromisoformat(args.backtest_spy_credit),

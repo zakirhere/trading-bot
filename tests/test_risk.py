@@ -68,12 +68,31 @@ def test_position_count_cap():
         s=_state(),
         is_live=False,
         expected_notional_usd=100,
-        open_position_count=20,
+        open_position_count=40,
         open_risk_usd=0,
         now_et=MID_DAY,
     )
     assert not rc.allowed
     assert "position count" in rc.reason
+
+
+def test_position_slots_count_vertical_spread_as_one():
+    positions = [
+        {
+            "symbol": "SPY260630C00706000",
+            "asset_class": "us_option",
+            "qty": "-1",
+            "market_value": "-4037",
+        },
+        {
+            "symbol": "SPY260630C00707000",
+            "asset_class": "us_option",
+            "qty": "1",
+            "market_value": "3788",
+        },
+    ]
+
+    assert risk.estimate_position_slots(positions) == 1
 
 
 def test_near_close_blocks():
@@ -109,7 +128,7 @@ def test_estimate_open_risk_pairs_call_credit_spread():
     assert risk.estimate_open_risk_usd(positions) == 100.0
 
 
-def test_estimate_open_risk_pairs_put_credit_spread_and_counts_equity():
+def test_estimate_open_risk_pairs_put_credit_spread_and_ignores_equity():
     positions = [
         {
             "symbol": "MSFT",
@@ -131,4 +150,4 @@ def test_estimate_open_risk_pairs_put_credit_spread_and_counts_equity():
         },
     ]
 
-    assert risk.estimate_open_risk_usd(positions) == 512.44
+    assert risk.estimate_open_risk_usd(positions) == 100.0

@@ -32,6 +32,22 @@ def mleg_net_limit_price(req: db.TradeRequest) -> float:
     return float(req.payload["limit_price"])
 
 
+def _order_result_from_broker_order(order: dict) -> broker.OrderResult:
+    return broker.OrderResult(
+        broker_order_id=order["id"],
+        status=order["status"],
+        symbol=order.get("symbol") or "MLEG",
+        side=order.get("side") or "mleg",
+        qty=float(order["qty"]),
+        raw=order,
+    )
+
+
+def _is_duplicate_client_order_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "client_order_id" in text and "must be unique" in text
+
+
 def requote_credit_for_request(
     alpaca_cfg: config.AlpacaConfig,
     req: db.TradeRequest,
@@ -51,11 +67,11 @@ def requote_credit_for_request(
     buy_quote = quotes.get(buy_leg["symbol"])
     if not sell_quote or not buy_quote:
         return None
-    sell_bid = spy_credit_strategy.quote_decimal(sell_quote, "bp")
-    buy_ask = spy_credit_strategy.quote_decimal(buy_quote, "ap")
-    if sell_bid is None or buy_ask is None:
-        return None
-    return spy_credit_strategy.money(sell_bid - buy_ask)
+    return spy_credit_strategy.spread_credit_from_quotes(
+        short_quote=sell_quote,
+        long_quote=buy_quote,
+        quote_basis=req.payload.get("quote_basis", spy_credit_strategy.QUOTE_BASIS_CONSERVATIVE),
+    )
 
 
 def credit_band_check(req: db.TradeRequest, credit: Decimal) -> risk.RiskCheck:
@@ -180,6 +196,14 @@ def execute_request(
                 reason="option spread automation is paper-only",
             )
 
+        if req.kind == "option_spread_open" and req.symbol in db.NEVER_TRADE_OPTION_UNDERLYINGS:
+            return db.update_status(
+                conn,
+                req.id,
+                status=db.STATUS_BLOCKED,
+                reason=f"{req.symbol} options are blocked",
+            )
+
         current_state = state.load()
         positions = b.get_positions()
         duplicate_check = duplicate_open_option_leg_check(req, positions)
@@ -196,7 +220,7 @@ def execute_request(
             s=current_state,
             is_live=cfg.is_live,
             expected_notional_usd=expected_notional,
-            open_position_count=len(positions),
+            open_position_count=risk.estimate_position_slots(positions),
             open_risk_usd=open_risk,
         )
         if not rc.allowed:
@@ -234,12 +258,19 @@ def execute_request(
             )
 
         if req.kind == "stock_market_buy":
-            result = b.submit_market_order(
-                symbol=req.symbol,
-                qty=req.qty,
-                side=req.side,
-                client_order_id=client_order_id,
-            )
+            try:
+                result = b.submit_market_order(
+                    symbol=req.symbol,
+                    qty=req.qty,
+                    side=req.side,
+                    client_order_id=client_order_id,
+                )
+            except Exception as exc:
+                if not _is_duplicate_client_order_error(exc):
+                    raise
+                result = _order_result_from_broker_order(
+                    b.get_order_by_client_order_id(client_order_id)
+                )
             message = f"Submitted market buy {req.qty:g} {req.symbol}."
         else:
             underlying_price = latest_underlying_price_for_request(cfg, req)
@@ -275,12 +306,19 @@ def execute_request(
                     reason=band_check.reason,
                 )
             strategy_name = req.payload.get("strategy", "SPREAD")
-            result = b.submit_mleg_limit_order(
-                qty=int(req.qty),
-                limit_price=mleg_net_limit_price(req),
-                legs=req.payload["legs"],
-                client_order_id=client_order_id,
-            )
+            try:
+                result = b.submit_mleg_limit_order(
+                    qty=int(req.qty),
+                    limit_price=mleg_net_limit_price(req),
+                    legs=req.payload["legs"],
+                    client_order_id=client_order_id,
+                )
+            except Exception as exc:
+                if not _is_duplicate_client_order_error(exc):
+                    raise
+                result = _order_result_from_broker_order(
+                    b.get_order_by_client_order_id(client_order_id)
+                )
             message = (
                 f"Submitted {strategy_name} {req.payload['direction']} "
                 f"{req.payload['short_symbol']}/{req.payload['long_symbol']} "

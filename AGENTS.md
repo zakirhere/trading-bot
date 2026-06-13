@@ -11,7 +11,9 @@ phased ramp from backtest → paper → live micro → scale.
 - **Risk caps are hardcoded guardrails.** Config can only make them tighter, never looser:
   - Max risk per trade: $500
   - Max total open risk: $10,000
-  - Max concurrent positions: 20
+  - Max concurrent position slots: 40, where a paired vertical spread counts as
+    one slot
+  - Max active strategy spreads: DCA 20, ICL 20
   - Daily loss limit: -2% of account → hard halt
 - **Every order needs an idempotency key:** `{strategy}_{symbol}_{date}_{intent_hash}`.
   Network retries must not double-fill.
@@ -25,8 +27,9 @@ phased ramp from backtest → paper → live micro → scale.
 - **Option spreads use limit orders only.** Never submit market orders for option
   spreads. Entries require limit credit at or above the strategy minimum; exits
   require limit debit at or below the profit target.
-- **Never trade AAPL.** User works for Apple. AAPL is excluded from manual stock
-  orders, stock strategies, and future scanners.
+- **Never trade AAPL options.** User works for Apple. AAPL option orders,
+  option strategies, and future option scanners are excluded. Existing or manual
+  AAPL stock holdings/orders are not included in option-spread risk.
 - **Alpaca data feed constraints matter.** Paper/basic data requires
   `feed=iex` for stock bars and `feed=indicative` for latest option quotes.
   Historical option bars do not accept `feed`; current/future option bars can
@@ -62,10 +65,11 @@ If paper P&L diverges from live P&L at phase 3, that's a model bug — fix befor
 
 ## Strategy candidates under simulation
 - SPY directional credit spread DCA:
-  5 random daily entries, direction from SPY green/red vs previous close, expiry
+  10 random daily entries, direction from SPY green/red vs previous close, expiry
   8-42 DTE, $1-wide spreads, no duplicate expiry/strike combinations. Select
-  spreads quoted at $0.18-$0.22 credit and submit limit-credit orders $0.02 over
-  the quote, i.e. $0.20-$0.24 limit credit.
+  spreads with midpoint credit at $0.18-$0.22, prefer the farthest OTM strike in
+  the band, and submit limit-credit orders $0.02 over midpoint, i.e. $0.20-$0.24
+  limit credit.
 - SPY $0.60 income credit spread:
   5 total daily entries, scan both call and put credit spreads, expiry 8-42 DTE,
   $1-wide spreads, no duplicate expiry/strike combinations, close winners at

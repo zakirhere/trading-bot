@@ -14,8 +14,13 @@ ORB_RANGE_END = time(9, 45)
 ORB_ENTRY_CUTOFF = time(11, 30)
 DCA_TARGET_MIN = Decimal("0.18")
 DCA_TARGET_MAX = Decimal("0.22")
+DCA_REQUOTE_MIN = Decimal("0.17")
+DCA_DAILY_TARGET_ENTRIES = 10
+DCA_MAX_ACTIVE_SPREADS = 20
+ICL_MAX_ACTIVE_SPREADS = 20
 DCA_LIMIT_CREDIT_MARKUP = Decimal("0.02")
 DCA_REJECT_AT_OR_ABOVE = Decimal("0.25")
+DCA_QUOTE_BASIS = spy_credit_strategy.QUOTE_BASIS_MIDPOINT
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,9 @@ def run_icl_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
     alpaca_cfg = config.load_alpaca_config()
     if alpaca_cfg.is_live:
         raise RuntimeError("ICL autorun is paper-only")
+
+    if active_strategy_spread_count(conn, strategy="ICL") >= ICL_MAX_ACTIVE_SPREADS:
+        return None
 
     now_et = now_et or datetime.now(spy_credit_strategy.ET)
     if not within_market_hours(now_et):
@@ -94,16 +102,19 @@ def run_dca_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
     if alpaca_cfg.is_live:
         raise RuntimeError("DCA autorun is paper-only")
 
+    if active_strategy_spread_count(conn, strategy="DCA") >= DCA_MAX_ACTIVE_SPREADS:
+        return None
+
     now_et = now_et or datetime.now(spy_credit_strategy.ET)
     if not within_market_hours(now_et):
         return None
 
     existing = strategy_requests_for_day(conn, now_et, strategy="DCA")
     active_existing = active_strategy_requests(existing)
-    if len(active_existing) >= 5:
+    if len(active_existing) >= DCA_DAILY_TARGET_ENTRIES:
         return None
 
-    due_slot = next_due_slot(now_et=now_et, existing=existing, target_count=5)
+    due_slot = next_due_slot(now_et=now_et, existing=existing, target_count=DCA_DAILY_TARGET_ENTRIES)
     if due_slot is None:
         return None
 
@@ -124,9 +135,11 @@ def run_dca_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
     payload = {
         **spy_credit_strategy.candidate_payload(candidate),
         "strategy": "DCA",
+        "quote_basis": DCA_QUOTE_BASIS,
         "quoted_credit": str(candidate.credit),
         "limit_credit_markup": str(DCA_LIMIT_CREDIT_MARKUP),
-        "target_min": str(DCA_TARGET_MIN),
+        "target_min": str(DCA_REQUOTE_MIN),
+        "selection_target_min": str(DCA_TARGET_MIN),
         "target_max": str(DCA_TARGET_MAX),
         "reject_at_or_above": str(DCA_REJECT_AT_OR_ABOVE),
         "slot_time": due_slot.isoformat(),
@@ -259,6 +272,8 @@ def select_dca_candidate(
             blocked_spreads=blocked,
             blocked_symbols=blocked_symbols,
             underlying_price=spy_price,
+            quote_basis=DCA_QUOTE_BASIS,
+            prefer_farther_otm=True,
         )
         if candidate:
             return candidate
@@ -321,6 +336,10 @@ def open_option_symbols(alpaca_cfg: config.AlpacaConfig) -> set[str]:
 def active_strategy_requests(requests: list[db.TradeRequest]) -> list[db.TradeRequest]:
     inactive_statuses = {db.STATUS_BLOCKED, db.STATUS_ERROR, db.STATUS_DRY_RUN}
     return [req for req in requests if req.status not in inactive_statuses]
+
+
+def active_strategy_spread_count(conn: sqlite3.Connection, *, strategy: str) -> int:
+    return len(active_strategy_requests(db.list_strategy_spread_requests(conn, strategy=strategy, limit=1000)))
 
 
 def next_due_slot(
