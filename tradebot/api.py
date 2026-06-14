@@ -8,14 +8,17 @@ import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
+from zoneinfo import ZoneInfo
 
-from . import config, db, journal, nl, state, worker
+from . import config, db, journal, nl, spread_summary, state, worker
 
 log = logging.getLogger(__name__)
 COOKIE_NAME = "tradebot_session"
+ET = ZoneInfo("America/New_York")
 
 
 def _parse_run_at(value: str | None) -> str | None:
@@ -184,6 +187,154 @@ def _strategy_spread_dict(req: db.TradeRequest) -> dict[str, Any]:
     }
 
 
+def _money_whole(value: str | Decimal | float | int | None) -> str:
+    if value is None:
+        return "n/a"
+    amount = Decimal(str(value)).quantize(Decimal("1"))
+    sign = "-" if amount < 0 else ""
+    return f"{sign}${abs(amount):,}"
+
+
+def _contract_price(value: str | Decimal | float | int | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"${Decimal(str(value)):.2f}"
+
+
+def _placed_et(value: str | None) -> str:
+    if not value:
+        return "unmatched"
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ET).strftime("%Y-%m-%d %H:%M")
+
+
+def _expiry_date(value: str) -> datetime:
+    return datetime.strptime(value, "%y%m%d").replace(tzinfo=timezone.utc)
+
+
+def _expiry_label(value: str) -> str:
+    dte = (_expiry_date(value).date() - datetime.now(timezone.utc).date()).days
+    return f"{_expiry_date(value).strftime('%Y-%m-%d')} ({dte} DTE)"
+
+
+def _pnl_class(value: str | None) -> str:
+    if value is None:
+        return ""
+    return "pnl-positive" if Decimal(value) >= 0 else "pnl-negative"
+
+
+def _open_spread_rows(summary: spread_summary.SpreadSummary) -> str:
+    rows = sorted(
+        summary.open_spreads,
+        key=lambda item: (item.placed_at is not None, item.placed_at or ""),
+        reverse=True,
+    )
+    if not rows:
+        return '<tr><td colspan="7" class="muted">No open broker option spreads.</td></tr>'
+    out = []
+    for item in rows:
+        pnl_class = _pnl_class(item.estimated_pnl)
+        out.append(
+            "<tr>"
+            f"<td>{html.escape(_placed_et(item.placed_at))}</td>"
+            f'<td><span class="mono">{html.escape(f"{item.short_strike}/{item.long_strike} {item.option_type}")}</span></td>'
+            f"<td>{item.qty}</td>"
+            f"<td>{html.escape(_contract_price(item.entry_credit))}</td>"
+            f"<td>{html.escape(_contract_price(item.current_debit))}</td>"
+            f'<td class="{pnl_class}">{html.escape(_money_whole(item.estimated_pnl))}</td>'
+            f"<td>{html.escape(_money_whole(item.max_loss))}</td>"
+            "</tr>"
+        )
+    return "\n".join(out)
+
+
+def _open_spread_pnl_list(summary: spread_summary.SpreadSummary) -> str:
+    rows = sorted(
+        summary.open_spreads,
+        key=lambda item: (
+            item.estimated_pnl is None,
+            Decimal(item.estimated_pnl) if item.estimated_pnl is not None else Decimal("0"),
+        ),
+    )
+    if not rows:
+        return '<div class="muted">No open spreads.</div>'
+    return "".join(
+        "<div>"
+        f'<span class="mono">{html.escape(f"{item.short_strike}/{item.long_strike} {item.option_type}")}</span>'
+        f" &rarr; "
+        f'<span class="{_pnl_class(item.estimated_pnl)}">{html.escape(_money_whole(item.estimated_pnl))}</span>'
+        "</div>"
+        for item in rows
+    )
+
+
+def _open_spread_expiry_list(summary: spread_summary.SpreadSummary) -> str:
+    counts: dict[str, int] = {}
+    for item in summary.open_spreads:
+        counts[item.expiration] = counts.get(item.expiration, 0) + 1
+    if not counts:
+        return '<div class="muted">No expiries.</div>'
+    return "".join(
+        f"<div>{html.escape(_expiry_label(expiration))}: {count} spread(s)</div>"
+        for expiration, count in sorted(counts.items())
+    )
+
+
+def _open_spread_warning(summary: spread_summary.SpreadSummary) -> str:
+    warnings = []
+    if summary.local_drift:
+        ids = ", ".join(str(item.request_id) for item in summary.local_drift)
+        warnings.append(f"Local drift: {len(summary.local_drift)} stale filled records ({ids})")
+    if summary.unpaired_legs:
+        warnings.append(f"Unpaired option legs: {len(summary.unpaired_legs)}")
+    if summary.unmatched_broker_spread_count:
+        warnings.append(f"Unmatched broker spreads: {summary.unmatched_broker_spread_count}")
+    if summary.unparsable_option_symbols:
+        warnings.append(f"Unparsable option symbols: {len(summary.unparsable_option_symbols)}")
+    if not warnings:
+        return ""
+    return '<div class="spread-warning">' + html.escape(" | ".join(warnings)) + "</div>"
+
+
+def _render_open_spread_summary(conn: sqlite3.Connection) -> str:
+    try:
+        summary = spread_summary.run(conn)
+    except Exception as exc:
+        log.warning("open spread summary unavailable: %s", exc)
+        return f"""
+        <section>
+          <h2>Open Spreads</h2>
+          <div class="muted">Open spread summary unavailable: {html.escape(str(exc))}</div>
+        </section>
+        """
+
+    return f"""
+        <section>
+          <h2>Open Spreads</h2>
+          <div class="spread-headline">
+            <span>Open spreads: <strong>{len(summary.open_spreads)}</strong></span>
+            <span>Unrealized P/L: <strong class="{_pnl_class(summary.estimated_total_pnl)}">{html.escape(_money_whole(summary.estimated_total_pnl))}</strong></span>
+            <span>Open risk: <strong>{html.escape(_money_whole(summary.spread_max_loss_usd))}</strong></span>
+            <span>Mode: <strong>{html.escape(summary.mode)}</strong></span>
+          </div>
+          {_open_spread_warning(summary)}
+          <table class="compact-table">
+            <thead><tr><th>Placed (ET)</th><th>Strikes</th><th>Qty</th><th>In</th><th>Now</th><th>P/L</th><th>Risk</th></tr></thead>
+            <tbody>{_open_spread_rows(summary)}</tbody>
+          </table>
+          <div class="spread-subgrid">
+            <div><h3>By P/L</h3>{_open_spread_pnl_list(summary)}</div>
+            <div><h3>By Expiry</h3>{_open_spread_expiry_list(summary)}</div>
+          </div>
+        </section>
+    """
+
+
 def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) -> str:
     s = state.load()
     requests = db.list_requests(conn, limit=50)
@@ -208,6 +359,7 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
     message_html = ""
     if message:
         message_html = f'<div class="notice">{html.escape(message)}</div>'
+    open_spread_summary_html = _render_open_spread_summary(conn)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -251,6 +403,7 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
     main {{ max-width: 1280px; margin: 0 auto; padding: 24px; }}
     h1 {{ font-size: 22px; margin: 0; }}
     h2 {{ font-size: 16px; margin: 0 0 14px; }}
+    h3 {{ margin: 0 0 8px; color: var(--muted); font-size: 13px; }}
     .status {{
       display: inline-block;
       border-radius: 999px;
@@ -296,6 +449,7 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
     table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
     th, td {{ text-align: left; border-bottom: 1px solid var(--line); padding: 9px 8px; vertical-align: top; }}
     th {{ color: var(--muted); font-weight: 650; }}
+    .compact-table th, .compact-table td {{ padding: 8px 8px; }}
     .tables {{ display: grid; gap: 18px; }}
     .console {{
       border-color: rgba(96, 165, 250, .32);
@@ -350,6 +504,33 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       color: #fde68a;
       font-weight: 650;
     }}
+    .muted {{ color: var(--muted); }}
+    .spread-headline {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 16px;
+      margin-bottom: 12px;
+      font-size: 14px;
+    }}
+    .spread-warning {{
+      margin-bottom: 12px;
+      padding: 9px 10px;
+      border: 1px solid rgba(248, 113, 113, .34);
+      border-radius: 6px;
+      background: rgba(248, 113, 113, .12);
+      color: #fecaca;
+      font-weight: 650;
+    }}
+    .spread-subgrid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 14px;
+      color: #cbd5e1;
+      font-size: 13px;
+    }}
+    .pnl-positive {{ color: #86efac; font-weight: 750; }}
+    .pnl-negative {{ color: #fca5a5; font-weight: 750; }}
     textarea {{
       width: 100%;
       min-height: 130px;
@@ -366,6 +547,7 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
       .grid {{ grid-template-columns: 1fr; }}
       header {{ align-items: flex-start; gap: 8px; flex-direction: column; }}
       main {{ padding: 14px; }}
+      .spread-subgrid {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -403,6 +585,7 @@ def render_dashboard(conn: sqlite3.Connection, *, message: str | None = None) ->
         </section>
       </div>
       <div class="tables">
+        {open_spread_summary_html}
         <section>
           <h2>Strategy Spreads</h2>
           <table>
@@ -480,6 +663,9 @@ class Handler(BaseHTTPRequestHandler):
                     for req in db.list_strategy_spread_requests(conn, limit=500)
                 ]
             )
+            return
+        if path == "/api/open-spreads":
+            self._reply_json(spread_summary.to_dict(spread_summary.run(conn)))
             return
         if path == "/api/trade-journal":
             path = journal.sync_from_db(conn)
