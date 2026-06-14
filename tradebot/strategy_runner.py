@@ -112,7 +112,7 @@ def run_icl_exit_scheduler_once(
         raise RuntimeError("ICL autorun is paper-only")
 
     now_et = now_et or datetime.now(spy_credit_strategy.ET)
-    if not within_market_hours(now_et):
+    if not within_exit_window(now_et):
         return []
 
     if (
@@ -492,6 +492,14 @@ def within_market_hours(now_et: datetime) -> bool:
     close_dt = datetime.combine(now_et.date(), spy_credit_strategy.MARKET_CLOSE, spy_credit_strategy.ET)
     cutoff = close_dt - spy_credit_strategy.timedelta(minutes=config.NO_NEW_TRADES_BEFORE_CLOSE_MIN)
     return open_dt <= now_et <= cutoff
+
+
+def within_exit_window(now_et: datetime) -> bool:
+    # Closes reduce risk and are exempt from the no-new-trades-before-close cutoff —
+    # we want the exit scheduler to keep polling all the way to 4:00 pm ET.
+    open_dt = datetime.combine(now_et.date(), spy_credit_strategy.MARKET_OPEN, spy_credit_strategy.ET)
+    close_dt = datetime.combine(now_et.date(), spy_credit_strategy.MARKET_CLOSE, spy_credit_strategy.ET)
+    return open_dt <= now_et <= close_dt
 
 
 def within_orb_observe_window(now_et: datetime) -> bool:

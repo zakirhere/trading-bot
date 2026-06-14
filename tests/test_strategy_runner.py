@@ -415,3 +415,53 @@ def test_icl_exit_scheduler_only_acts_on_filled_opens(tmp_path, monkeypatch):
         assert queued == []
     finally:
         conn.close()
+
+
+def test_icl_exit_scheduler_runs_inside_no_new_trades_window(tmp_path, monkeypatch):
+    # The opener stops 5 min before close (NO_NEW_TRADES_BEFORE_CLOSE_MIN), but the
+    # exit scheduler must keep polling until 4:00 pm — closing reduces risk.
+    conn = _conn(tmp_path)
+    short = "SPY260619C00755000"
+    long = "SPY260619C00756000"
+    fake = _FakeQuoteData({
+        short: {"ap": "0.40", "bp": "0.38"},
+        long: {"ap": "0.12", "bp": "0.10"},
+    })
+    _enable_icl_autorun(monkeypatch, fake_data=fake)
+
+    try:
+        _seed_filled_icl_open(conn, credit=Decimal("0.60"), short=short, long=long)
+        late = datetime(2026, 6, 12, 15, 58, tzinfo=ET)
+
+        # Sanity: the opener's window says we're already shut.
+        assert not strategy_runner.within_market_hours(late)
+        # But the exit window is still open.
+        assert strategy_runner.within_exit_window(late)
+
+        queued = strategy_runner.run_icl_exit_scheduler_once(conn, now_et=late)
+
+        assert len(queued) == 1
+        assert queued[0].kind == "option_spread_close"
+    finally:
+        conn.close()
+
+
+def test_icl_exit_scheduler_blocks_after_market_close(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    short = "SPY260619C00755000"
+    long = "SPY260619C00756000"
+    fake = _FakeQuoteData({
+        short: {"ap": "0.40", "bp": "0.38"},
+        long: {"ap": "0.12", "bp": "0.10"},
+    })
+    _enable_icl_autorun(monkeypatch, fake_data=fake)
+
+    try:
+        _seed_filled_icl_open(conn, credit=Decimal("0.60"), short=short, long=long)
+        after = datetime(2026, 6, 12, 16, 5, tzinfo=ET)
+
+        queued = strategy_runner.run_icl_exit_scheduler_once(conn, now_et=after)
+
+        assert queued == []
+    finally:
+        conn.close()
