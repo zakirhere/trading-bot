@@ -153,3 +153,40 @@ def test_spread_summary_marks_pair_broker_only_when_local_open_retired(tmp_path)
     assert summary.open_spreads[0].request_id is None
     assert summary.open_spreads[0].status == "broker_only"
     assert summary.unmatched_broker_spread_count == 1
+
+
+def test_spread_summary_marks_pair_broker_only_when_broker_qty_exceeds_local(tmp_path):
+    conn = db.connect(tmp_path / "tradebot.sqlite")
+    db.init(conn)
+    try:
+        db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.60,
+            payload={
+                "strategy": "ICL",
+                "direction": "call_credit",
+                "expiration_date": "2026-07-02",
+                "short_symbol": "SPY260702C00757000",
+                "long_symbol": "SPY260702C00758000",
+                "legs": [],
+            },
+        )
+
+        summary = spread_summary.build(
+            conn,
+            mode="paper",
+            positions=[
+                {"symbol": "SPY260702C00757000", "asset_class": "us_option", "qty": "-2", "market_value": "-64"},
+                {"symbol": "SPY260702C00758000", "asset_class": "us_option", "qty": "2", "market_value": "0"},
+            ],
+        )
+    finally:
+        conn.close()
+
+    assert len(summary.open_spreads) == 1
+    assert summary.open_spreads[0].request_id is None
+    assert summary.open_spreads[0].status == "broker_only"
+    assert summary.unmatched_broker_spread_count == 1

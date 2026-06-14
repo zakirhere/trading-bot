@@ -219,7 +219,7 @@ def find_unmatched_broker_pairs(conn, pairs: list[Pair]) -> list[Pair]:
     # filled while the broker position remains. Returning these means we won't
     # silently double up if a strategy refills "the freed slot".
     closed_open_ids = db.filled_close_open_ids(conn)
-    active_pair_keys: set[frozenset[str]] = set()
+    active_pair_qty: dict[frozenset[str], int] = {}
     for req in db.list_strategy_spread_requests(conn, limit=1000):
         if req.status not in ACTIVE_STATUSES:
             continue
@@ -228,12 +228,13 @@ def find_unmatched_broker_pairs(conn, pairs: list[Pair]) -> list[Pair]:
         short = req.payload.get("short_symbol")
         long = req.payload.get("long_symbol")
         if short and long:
-            active_pair_keys.add(frozenset([short, long]))
+            key = frozenset([short, long])
+            active_pair_qty[key] = active_pair_qty.get(key, 0) + int(req.qty)
 
     unmatched: list[Pair] = []
     for pair in pairs:
         key = frozenset([pair.short_symbol, pair.long_symbol])
-        if key not in active_pair_keys:
+        if active_pair_qty.get(key, 0) < pair.qty:
             unmatched.append(pair)
     return unmatched
 

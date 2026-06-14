@@ -205,6 +205,61 @@ def test_find_unmatched_broker_pairs_returns_empty_when_active_open_matches(tmp_
     assert unmatched == []
 
 
+def test_find_unmatched_broker_pairs_flags_quantity_shortfall(tmp_path):
+    conn = db.connect(tmp_path / "tradebot.sqlite")
+    db.init(conn)
+    pair = _make_pair("SPY260619C00755000", "SPY260619C00756000", qty=2)
+    try:
+        req = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.60,
+            payload={
+                "strategy": "ICL",
+                "short_symbol": pair.short_symbol,
+                "long_symbol": pair.long_symbol,
+                "legs": [],
+            },
+        )
+        db.update_status(conn, req.id, status=db.STATUS_FILLED, reason="filled")
+
+        unmatched = spread_audit.find_unmatched_broker_pairs(conn, [pair])
+    finally:
+        conn.close()
+
+    assert unmatched == [pair]
+
+
+def test_find_unmatched_broker_pairs_sums_active_local_quantity(tmp_path):
+    conn = db.connect(tmp_path / "tradebot.sqlite")
+    db.init(conn)
+    pair = _make_pair("SPY260619C00755000", "SPY260619C00756000", qty=2)
+    try:
+        for _ in range(2):
+            req = db.create_option_spread_open(
+                conn,
+                symbol="SPY",
+                qty=1,
+                side="sell",
+                limit_credit=0.60,
+                payload={
+                    "strategy": "ICL",
+                    "short_symbol": pair.short_symbol,
+                    "long_symbol": pair.long_symbol,
+                    "legs": [],
+                },
+            )
+            db.update_status(conn, req.id, status=db.STATUS_FILLED, reason="filled")
+
+        unmatched = spread_audit.find_unmatched_broker_pairs(conn, [pair])
+    finally:
+        conn.close()
+
+    assert unmatched == []
+
+
 def test_notify_if_changed_dedupes(tmp_path, monkeypatch):
     sent = []
     audit = spread_audit.SpreadAudit(

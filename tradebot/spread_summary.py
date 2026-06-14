@@ -152,7 +152,10 @@ def _match_local(
         if req.id in closed_open_ids:
             continue
         payload = req.payload
-        if pair_symbols == {payload.get("short_symbol"), payload.get("long_symbol")}:
+        if (
+            pair_symbols == {payload.get("short_symbol"), payload.get("long_symbol")}
+            and int(req.qty) >= pair.qty
+        ):
             return req
     return None
 
