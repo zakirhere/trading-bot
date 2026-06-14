@@ -92,6 +92,165 @@ def test_mleg_credit_order_uses_negative_net_limit(tmp_path):
         conn.close()
 
 
+def test_mleg_debit_order_uses_positive_net_limit(tmp_path):
+    conn = _conn(tmp_path)
+    try:
+        req = db.create_option_spread_close(
+            conn,
+            symbol="SPY",
+            qty=1,
+            limit_debit=0.30,
+            payload={
+                "strategy": "ICL",
+                "open_request_id": 1,
+                "short_symbol": "SPY260619C00755000",
+                "long_symbol": "SPY260619C00756000",
+                "legs": [
+                    {"symbol": "SPY260619C00755000", "side": "buy"},
+                    {"symbol": "SPY260619C00756000", "side": "sell"},
+                ],
+            },
+        )
+
+        assert worker.mleg_net_limit_price(req) == 0.30
+    finally:
+        conn.close()
+
+
+def test_execute_option_spread_close_submits_positive_debit(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    fake_state = state.State()
+    submitted = {}
+
+    class FakeBroker:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        def get_account(self):
+            return {"trading_blocked": False, "account_blocked": False}
+
+        def get_clock(self):
+            return {"is_open": True}
+
+        def get_positions(self):
+            # Position-count cap would block if it were applied; close should bypass that gate.
+            return [
+                {"asset_class": "us_option", "symbol": f"SPY00{i}", "qty": "-1", "market_value": "0"}
+                for i in range(25)
+            ]
+
+        def submit_mleg_limit_order(self, *, qty, limit_price, legs, client_order_id, time_in_force="day"):
+            submitted["qty"] = qty
+            submitted["limit_price"] = limit_price
+            submitted["legs"] = legs
+            submitted["client_order_id"] = client_order_id
+            return worker.broker.OrderResult(
+                broker_order_id="broker-close-1",
+                status="pending_new",
+                symbol="MLEG",
+                side="mleg",
+                qty=qty,
+                raw={},
+            )
+
+        def close(self):
+            pass
+
+    @contextmanager
+    def fake_transaction():
+        yield fake_state
+
+    monkeypatch.setattr(worker.config, "load_alpaca_config", lambda: SimpleNamespace(is_live=False))
+    monkeypatch.setattr(worker.broker, "AlpacaBroker", FakeBroker)
+    monkeypatch.setattr(worker.state, "load", lambda: fake_state)
+    monkeypatch.setattr(worker.state, "transaction", fake_transaction)
+    monkeypatch.setattr(worker.notify, "send", lambda alert: None)
+
+    try:
+        req = db.create_option_spread_close(
+            conn,
+            symbol="SPY",
+            qty=1,
+            limit_debit=0.30,
+            payload={
+                "strategy": "ICL",
+                "open_request_id": 1,
+                "direction": "call_credit",
+                "short_symbol": "SPY260619C00755000",
+                "long_symbol": "SPY260619C00756000",
+                "legs": [
+                    {"symbol": "SPY260619C00755000", "side": "buy", "position_intent": "buy_to_close"},
+                    {"symbol": "SPY260619C00756000", "side": "sell", "position_intent": "sell_to_close"},
+                ],
+            },
+        )
+
+        updated = worker.execute_request(conn, req)
+
+        assert submitted["limit_price"] == 0.30
+        assert updated.status == db.STATUS_SUBMITTED
+        assert updated.reason == "pending_new"
+    finally:
+        conn.close()
+
+
+def test_execute_option_spread_close_blocked_when_halted(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    halted_state = state.State(halted=True, halt_reason="manual halt")
+    submitted = {"called": False}
+
+    class FakeBroker:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        def get_account(self):
+            return {"trading_blocked": False, "account_blocked": False}
+
+        def get_clock(self):
+            return {"is_open": True}
+
+        def get_positions(self):
+            return []
+
+        def submit_mleg_limit_order(self, **kwargs):
+            submitted["called"] = True
+            raise AssertionError("should not submit when halted")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(worker.config, "load_alpaca_config", lambda: SimpleNamespace(is_live=False))
+    monkeypatch.setattr(worker.broker, "AlpacaBroker", FakeBroker)
+    monkeypatch.setattr(worker.state, "load", lambda: halted_state)
+    monkeypatch.setattr(worker.notify, "send", lambda alert: None)
+
+    try:
+        req = db.create_option_spread_close(
+            conn,
+            symbol="SPY",
+            qty=1,
+            limit_debit=0.30,
+            payload={
+                "strategy": "ICL",
+                "open_request_id": 1,
+                "short_symbol": "SPY260619C00755000",
+                "long_symbol": "SPY260619C00756000",
+                "legs": [
+                    {"symbol": "SPY260619C00755000", "side": "buy"},
+                    {"symbol": "SPY260619C00756000", "side": "sell"},
+                ],
+            },
+        )
+
+        updated = worker.execute_request(conn, req)
+
+        assert not submitted["called"]
+        assert updated.status == db.STATUS_BLOCKED
+        assert "halted" in (updated.reason or "")
+    finally:
+        conn.close()
+
+
 def test_execute_option_spread_submits_credit_as_negative_limit(tmp_path, monkeypatch):
     conn = _conn(tmp_path)
     fake_state = state.State()

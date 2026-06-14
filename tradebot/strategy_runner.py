@@ -3,8 +3,8 @@ from __future__ import annotations
 import random
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
-from decimal import Decimal
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import ROUND_DOWN, Decimal
 
 from . import broker, config, db, notify, spy_credit_strategy
 
@@ -21,6 +21,10 @@ ICL_MAX_ACTIVE_SPREADS = 20
 DCA_LIMIT_CREDIT_MARKUP = Decimal("0.02")
 DCA_REJECT_AT_OR_ABOVE = Decimal("0.25")
 DCA_QUOTE_BASIS = spy_credit_strategy.QUOTE_BASIS_MIDPOINT
+ICL_PROFIT_TARGET_FRACTION = Decimal("0.5")
+ICL_EXIT_MIN_POLL_INTERVAL = timedelta(minutes=5)
+
+_icl_exit_last_run: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,125 @@ def run_icl_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
         limit_credit=float(candidate.credit),
         dry_run=False,
         payload=payload,
+    )
+
+
+def run_icl_exit_scheduler_once(
+    conn: sqlite3.Connection,
+    *,
+    now_et: datetime | None = None,
+) -> list[db.TradeRequest]:
+    global _icl_exit_last_run
+    strategy_cfg = config.load_strategy_config()
+    if not strategy_cfg.icl_paper_autorun:
+        return []
+
+    alpaca_cfg = config.load_alpaca_config()
+    if alpaca_cfg.is_live:
+        raise RuntimeError("ICL autorun is paper-only")
+
+    now_et = now_et or datetime.now(spy_credit_strategy.ET)
+    if not within_market_hours(now_et):
+        return []
+
+    if (
+        _icl_exit_last_run is not None
+        and now_et - _icl_exit_last_run < ICL_EXIT_MIN_POLL_INTERVAL
+    ):
+        return []
+    _icl_exit_last_run = now_et
+
+    opens = db.list_strategy_spread_requests(conn, strategy="ICL", limit=1000)
+    closes = db.list_strategy_close_requests(conn, strategy="ICL", limit=1000)
+    closed_open_ids = {
+        int(req.payload["open_request_id"])
+        for req in closes
+        if req.status not in {db.STATUS_BLOCKED, db.STATUS_ERROR}
+        and req.payload.get("open_request_id") is not None
+    }
+
+    candidates: list[db.TradeRequest] = []
+    for open_req in opens:
+        if open_req.status != db.STATUS_FILLED:
+            continue
+        if open_req.id in closed_open_ids:
+            continue
+        if not {"short_symbol", "long_symbol", "credit"} <= set(open_req.payload):
+            continue
+        candidates.append(open_req)
+
+    if not candidates:
+        return []
+
+    queued: list[db.TradeRequest] = []
+    data = spy_credit_strategy.AlpacaMarketData(alpaca_cfg)
+    try:
+        for open_req in candidates:
+            queued_req = _maybe_queue_icl_close(conn, open_req, data=data, now_et=now_et)
+            if queued_req is not None:
+                queued.append(queued_req)
+    finally:
+        data.close()
+    return queued
+
+
+def _maybe_queue_icl_close(
+    conn: sqlite3.Connection,
+    open_req: db.TradeRequest,
+    *,
+    data: spy_credit_strategy.AlpacaMarketData,
+    now_et: datetime,
+) -> db.TradeRequest | None:
+    payload = open_req.payload
+    short_symbol = payload["short_symbol"]
+    long_symbol = payload["long_symbol"]
+    entry_credit = Decimal(str(payload["credit"]))
+    target_debit = icl_close_target_debit(entry_credit)
+
+    quotes = data.option_latest_quotes(symbols=[short_symbol, long_symbol])
+    short_quote = quotes.get(short_symbol)
+    long_quote = quotes.get(long_symbol)
+    if not short_quote or not long_quote:
+        return None
+    quoted_debit = spy_credit_strategy.spread_debit_from_quotes(
+        short_quote=short_quote,
+        long_quote=long_quote,
+    )
+    if quoted_debit is None:
+        return None
+    if quoted_debit > target_debit:
+        return None
+
+    close_payload = {
+        "strategy": "ICL",
+        "open_request_id": open_req.id,
+        "direction": payload.get("direction"),
+        "expiration_date": payload.get("expiration_date"),
+        "short_symbol": short_symbol,
+        "long_symbol": long_symbol,
+        "short_strike": payload.get("short_strike"),
+        "long_strike": payload.get("long_strike"),
+        "entry_credit": str(entry_credit),
+        "profit_target_fraction": str(ICL_PROFIT_TARGET_FRACTION),
+        "quoted_debit": str(quoted_debit),
+        "selected_at": now_et.isoformat(),
+        "legs": spy_credit_strategy.closing_legs(
+            short_symbol=short_symbol,
+            long_symbol=long_symbol,
+        ),
+    }
+    return db.create_option_spread_close(
+        conn,
+        symbol=open_req.symbol,
+        qty=int(open_req.qty),
+        limit_debit=float(target_debit),
+        payload=close_payload,
+    )
+
+
+def icl_close_target_debit(entry_credit: Decimal) -> Decimal:
+    return (entry_credit * ICL_PROFIT_TARGET_FRACTION).quantize(
+        Decimal("0.01"), rounding=ROUND_DOWN
     )
 
 

@@ -510,6 +510,23 @@ def opening_legs(candidate: SpreadCandidate) -> list[dict[str, str]]:
     ]
 
 
+def closing_legs(*, short_symbol: str, long_symbol: str) -> list[dict[str, str]]:
+    return [
+        {
+            "symbol": short_symbol,
+            "ratio_qty": "1",
+            "side": "buy",
+            "position_intent": "buy_to_close",
+        },
+        {
+            "symbol": long_symbol,
+            "ratio_qty": "1",
+            "side": "sell",
+            "position_intent": "sell_to_close",
+        },
+    ]
+
+
 def candidate_payload(candidate: SpreadCandidate) -> dict:
     return {
         "strategy": "ICL",
@@ -733,6 +750,18 @@ def spread_credit_from_quotes(
         long_mid = (long_bid + long_ask) / Decimal("2")
         return money(short_mid - long_mid)
     raise ValueError(f"unsupported quote_basis={quote_basis!r}")
+
+
+def spread_debit_from_quotes(
+    *,
+    short_quote: dict,
+    long_quote: dict,
+) -> Decimal | None:
+    short_ask = quote_decimal(short_quote, "ap")
+    long_bid = quote_decimal(long_quote, "bp")
+    if short_ask is None or long_bid is None:
+        return None
+    return money(short_ask - long_bid)
 
 
 def spread_is_otm(*, direction: str, short_strike: Decimal, underlying_price: Decimal) -> bool:

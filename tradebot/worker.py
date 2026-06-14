@@ -29,6 +29,8 @@ def mleg_net_limit_price(req: db.TradeRequest) -> float:
     # Alpaca MLeg net prices are signed: positive is debit, negative is credit.
     if req.order_type == "limit_credit":
         return -abs(float(req.payload["limit_credit"]))
+    if req.order_type == "limit_debit":
+        return abs(float(req.payload["limit_debit"]))
     return float(req.payload["limit_price"])
 
 
@@ -159,7 +161,7 @@ def execute_request(
     *,
     force_closed: bool = False,
 ) -> db.TradeRequest:
-    if req.kind not in {"stock_market_buy", "option_spread_open"}:
+    if req.kind not in {"stock_market_buy", "option_spread_open", "option_spread_close"}:
         return db.update_status(
             conn,
             req.id,
@@ -188,7 +190,7 @@ def execute_request(
                 reason="market is closed",
             )
 
-        if cfg.is_live and req.kind == "option_spread_open":
+        if cfg.is_live and req.kind in {"option_spread_open", "option_spread_close"}:
             return db.update_status(
                 conn,
                 req.id,
@@ -196,7 +198,10 @@ def execute_request(
                 reason="option spread automation is paper-only",
             )
 
-        if req.kind == "option_spread_open" and req.symbol in db.NEVER_TRADE_OPTION_UNDERLYINGS:
+        if (
+            req.kind in {"option_spread_open", "option_spread_close"}
+            and req.symbol in db.NEVER_TRADE_OPTION_UNDERLYINGS
+        ):
             return db.update_status(
                 conn,
                 req.id,
@@ -206,38 +211,57 @@ def execute_request(
 
         current_state = state.load()
         positions = b.get_positions()
-        duplicate_check = duplicate_open_option_leg_check(req, positions)
-        if not duplicate_check.allowed:
-            return db.update_status(
-                conn,
-                req.id,
-                status=db.STATUS_BLOCKED,
-                reason=duplicate_check.reason,
-            )
+        if req.kind == "option_spread_open":
+            duplicate_check = duplicate_open_option_leg_check(req, positions)
+            if not duplicate_check.allowed:
+                return db.update_status(
+                    conn,
+                    req.id,
+                    status=db.STATUS_BLOCKED,
+                    reason=duplicate_check.reason,
+                )
         expected_notional = expected_risk_usd(req)
         open_risk = risk.estimate_open_risk_usd(positions)
-        rc = risk.check_pretrade(
-            s=current_state,
-            is_live=cfg.is_live,
-            expected_notional_usd=expected_notional,
-            open_position_count=risk.estimate_position_slots(positions),
-            open_risk_usd=open_risk,
-        )
-        if not rc.allowed:
-            notify.send(
-                notify.Alert(
-                    level="risk",
-                    title="Queued trade blocked",
-                    message=rc.reason or "risk gate blocked",
-                    fields={"request_id": req.id, "symbol": req.symbol, "qty": req.qty},
+        if req.kind == "option_spread_close":
+            if current_state.halted:
+                reason = f"halted: {current_state.halt_reason or 'no reason'}"
+                notify.send(
+                    notify.Alert(
+                        level="risk",
+                        title="Queued close blocked",
+                        message=reason,
+                        fields={"request_id": req.id, "symbol": req.symbol},
+                    )
                 )
+                return db.update_status(
+                    conn,
+                    req.id,
+                    status=db.STATUS_BLOCKED,
+                    reason=reason,
+                )
+        else:
+            rc = risk.check_pretrade(
+                s=current_state,
+                is_live=cfg.is_live,
+                expected_notional_usd=expected_notional,
+                open_position_count=risk.estimate_position_slots(positions),
+                open_risk_usd=open_risk,
             )
-            return db.update_status(
-                conn,
-                req.id,
-                status=db.STATUS_BLOCKED,
-                reason=rc.reason,
-            )
+            if not rc.allowed:
+                notify.send(
+                    notify.Alert(
+                        level="risk",
+                        title="Queued trade blocked",
+                        message=rc.reason or "risk gate blocked",
+                        fields={"request_id": req.id, "symbol": req.symbol, "qty": req.qty},
+                    )
+                )
+                return db.update_status(
+                    conn,
+                    req.id,
+                    status=db.STATUS_BLOCKED,
+                    reason=rc.reason,
+                )
 
         client_order_id = _client_order_id(req)
         if req.dry_run:
@@ -272,6 +296,26 @@ def execute_request(
                     b.get_order_by_client_order_id(client_order_id)
                 )
             message = f"Submitted market buy {req.qty:g} {req.symbol}."
+        elif req.kind == "option_spread_close":
+            strategy_name = req.payload.get("strategy", "SPREAD")
+            try:
+                result = b.submit_mleg_limit_order(
+                    qty=int(req.qty),
+                    limit_price=mleg_net_limit_price(req),
+                    legs=req.payload["legs"],
+                    client_order_id=client_order_id,
+                )
+            except Exception as exc:
+                if not _is_duplicate_client_order_error(exc):
+                    raise
+                result = _order_result_from_broker_order(
+                    b.get_order_by_client_order_id(client_order_id)
+                )
+            message = (
+                f"Submitted {strategy_name} close "
+                f"{req.payload.get('short_symbol')}/{req.payload.get('long_symbol')} "
+                f"for ${float(req.payload['limit_debit']):.2f} debit."
+            )
         else:
             underlying_price = latest_underlying_price_for_request(cfg, req)
             if underlying_price is None:
@@ -382,6 +426,8 @@ def execute_request(
 def expected_risk_usd(req: db.TradeRequest) -> float:
     if req.kind == "option_spread_open":
         return float(req.payload.get("max_risk", config.MAX_RISK_PER_TRADE_USD))
+    if req.kind == "option_spread_close":
+        return 0.0
     return req.qty * config.MAX_RISK_PER_TRADE_USD
 
 
@@ -466,6 +512,10 @@ def run_forever(
                 strategy_runner.run_icl_scheduler_once(conn)
             except Exception:
                 log.exception("ICL scheduler failed")
+            try:
+                strategy_runner.run_icl_exit_scheduler_once(conn)
+            except Exception:
+                log.exception("ICL exit scheduler failed")
             try:
                 strategy_runner.run_dca_scheduler_once(conn)
             except Exception:

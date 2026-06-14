@@ -60,6 +60,14 @@ def request_details(req: db.TradeRequest) -> str:
         direction = payload.get("direction", "")
         credit = payload.get("limit_credit", payload.get("credit", ""))
         return f"{direction} {expiry} {short_symbol}/{long_symbol} credit={credit}"
+    if req.kind == "option_spread_close":
+        payload = req.payload
+        short_symbol = payload.get("short_symbol", "")
+        long_symbol = payload.get("long_symbol", "")
+        expiry = payload.get("expiration_date", "")
+        direction = payload.get("direction", "")
+        debit = payload.get("limit_debit", "")
+        return f"close {direction} {expiry} {short_symbol}/{long_symbol} debit={debit}"
     if req.kind == "stock_market_buy":
         timing = f" run_at={req.run_at}" if req.run_at else ""
         return f"{req.side} market{timing}"

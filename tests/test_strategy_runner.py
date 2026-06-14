@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from tradebot import db, spy_credit_strategy, strategy_runner
@@ -211,3 +212,206 @@ def test_orb_scan_does_not_repeat_existing_signal():
     signals = strategy_runner.scan_orb_signals(data=OrbData(), now_et=now, existing=[event])
 
     assert signals == []
+
+
+def test_icl_close_target_debit_rounds_down():
+    assert strategy_runner.icl_close_target_debit(Decimal("0.60")) == Decimal("0.30")
+    assert strategy_runner.icl_close_target_debit(Decimal("0.59")) == Decimal("0.29")
+    assert strategy_runner.icl_close_target_debit(Decimal("0.61")) == Decimal("0.30")
+
+
+class _FakeQuoteData:
+    def __init__(self, quotes: dict[str, dict]):
+        self.quotes = quotes
+        self.calls = 0
+
+    def option_latest_quotes(self, *, symbols):
+        self.calls += 1
+        return {symbol: self.quotes[symbol] for symbol in symbols if symbol in self.quotes}
+
+    def close(self):
+        pass
+
+
+def _seed_filled_icl_open(conn, *, credit, short="SPY260619C00755000", long="SPY260619C00756000"):
+    req = db.create_option_spread_open(
+        conn,
+        symbol="SPY",
+        qty=1,
+        side="sell",
+        limit_credit=float(credit),
+        payload={
+            "strategy": "ICL",
+            "direction": "call_credit",
+            "expiration_date": "2026-06-19",
+            "short_symbol": short,
+            "long_symbol": long,
+            "short_strike": "755",
+            "long_strike": "756",
+            "credit": str(credit),
+            "max_risk": "40.00",
+            "legs": [],
+        },
+    )
+    return db.update_status(conn, req.id, status=db.STATUS_FILLED, reason="filled")
+
+
+def _enable_icl_autorun(monkeypatch, *, fake_data, alpaca_is_live=False):
+    monkeypatch.setattr(
+        strategy_runner.config,
+        "load_strategy_config",
+        lambda: SimpleNamespace(icl_paper_autorun=True, dca_paper_autorun=False, orb_observe=False),
+    )
+    monkeypatch.setattr(
+        strategy_runner.config,
+        "load_alpaca_config",
+        lambda: SimpleNamespace(is_live=alpaca_is_live),
+    )
+    monkeypatch.setattr(strategy_runner.spy_credit_strategy, "AlpacaMarketData", lambda cfg: fake_data)
+    strategy_runner._icl_exit_last_run = None
+
+
+def test_icl_exit_scheduler_queues_close_when_debit_at_target(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    short = "SPY260619C00755000"
+    long = "SPY260619C00756000"
+    fake = _FakeQuoteData({
+        short: {"ap": "0.40", "bp": "0.38"},
+        long: {"ap": "0.12", "bp": "0.10"},
+    })
+    # short_ask 0.40 - long_bid 0.10 = 0.30 = exactly the 50% target on a 0.60 credit.
+    _enable_icl_autorun(monkeypatch, fake_data=fake)
+
+    try:
+        open_req = _seed_filled_icl_open(conn, credit=Decimal("0.60"), short=short, long=long)
+        now = datetime(2026, 6, 12, 11, 0, tzinfo=ET)
+
+        queued = strategy_runner.run_icl_exit_scheduler_once(conn, now_et=now)
+
+        assert len(queued) == 1
+        close_req = queued[0]
+        assert close_req.kind == "option_spread_close"
+        assert close_req.order_type == "limit_debit"
+        assert close_req.payload["limit_debit"] == 0.30
+        assert close_req.payload["open_request_id"] == open_req.id
+        assert close_req.payload["legs"][0]["position_intent"] == "buy_to_close"
+        assert close_req.payload["legs"][1]["position_intent"] == "sell_to_close"
+    finally:
+        conn.close()
+
+
+def test_icl_exit_scheduler_skips_when_debit_above_target(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    short = "SPY260619C00755000"
+    long = "SPY260619C00756000"
+    fake = _FakeQuoteData({
+        short: {"ap": "0.45", "bp": "0.43"},  # short_ask 0.45 - long_bid 0.10 = 0.35 > 0.30
+        long: {"ap": "0.12", "bp": "0.10"},
+    })
+    _enable_icl_autorun(monkeypatch, fake_data=fake)
+
+    try:
+        _seed_filled_icl_open(conn, credit=Decimal("0.60"), short=short, long=long)
+        now = datetime(2026, 6, 12, 11, 0, tzinfo=ET)
+
+        queued = strategy_runner.run_icl_exit_scheduler_once(conn, now_et=now)
+
+        assert queued == []
+        assert db.list_strategy_close_requests(conn, strategy="ICL") == []
+    finally:
+        conn.close()
+
+
+def test_icl_exit_scheduler_idempotent_with_existing_close(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    short = "SPY260619C00755000"
+    long = "SPY260619C00756000"
+    fake = _FakeQuoteData({
+        short: {"ap": "0.40", "bp": "0.38"},
+        long: {"ap": "0.12", "bp": "0.10"},
+    })
+    _enable_icl_autorun(monkeypatch, fake_data=fake)
+
+    try:
+        open_req = _seed_filled_icl_open(conn, credit=Decimal("0.60"), short=short, long=long)
+        now = datetime(2026, 6, 12, 11, 0, tzinfo=ET)
+        first = strategy_runner.run_icl_exit_scheduler_once(conn, now_et=now)
+        assert len(first) == 1
+
+        # Run again 6 minutes later — should NOT double-queue, even though throttle has elapsed.
+        strategy_runner._icl_exit_last_run = None
+        later = datetime(2026, 6, 12, 11, 6, tzinfo=ET)
+        second = strategy_runner.run_icl_exit_scheduler_once(conn, now_et=later)
+
+        assert second == []
+        closes = db.list_strategy_close_requests(conn, strategy="ICL")
+        assert len(closes) == 1
+        assert closes[0].payload["open_request_id"] == open_req.id
+    finally:
+        conn.close()
+
+
+def test_icl_exit_scheduler_throttles_within_5_minutes(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    short = "SPY260619C00755000"
+    long = "SPY260619C00756000"
+    fake = _FakeQuoteData({
+        short: {"ap": "0.40", "bp": "0.38"},
+        long: {"ap": "0.12", "bp": "0.10"},
+    })
+    _enable_icl_autorun(monkeypatch, fake_data=fake)
+
+    try:
+        _seed_filled_icl_open(conn, credit=Decimal("0.60"), short=short, long=long)
+        now = datetime(2026, 6, 12, 11, 0, tzinfo=ET)
+        first = strategy_runner.run_icl_exit_scheduler_once(conn, now_et=now)
+        assert len(first) == 1
+        first_call_count = fake.calls
+
+        # Same fake_data; second invocation 1 minute later should short-circuit before fetching quotes.
+        soon = datetime(2026, 6, 12, 11, 1, tzinfo=ET)
+        second = strategy_runner.run_icl_exit_scheduler_once(conn, now_et=soon)
+
+        assert second == []
+        assert fake.calls == first_call_count
+    finally:
+        conn.close()
+
+
+def test_icl_exit_scheduler_only_acts_on_filled_opens(tmp_path, monkeypatch):
+    conn = _conn(tmp_path)
+    short = "SPY260619C00755000"
+    long = "SPY260619C00756000"
+    fake = _FakeQuoteData({
+        short: {"ap": "0.40", "bp": "0.38"},
+        long: {"ap": "0.12", "bp": "0.10"},
+    })
+    _enable_icl_autorun(monkeypatch, fake_data=fake)
+
+    try:
+        # Submitted but not yet filled — should be ignored.
+        req = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.60,
+            payload={
+                "strategy": "ICL",
+                "direction": "call_credit",
+                "short_symbol": short,
+                "long_symbol": long,
+                "short_strike": "755",
+                "long_strike": "756",
+                "credit": "0.60",
+                "legs": [],
+            },
+        )
+        db.update_status(conn, req.id, status=db.STATUS_SUBMITTED, reason="new")
+        now = datetime(2026, 6, 12, 11, 0, tzinfo=ET)
+
+        queued = strategy_runner.run_icl_exit_scheduler_once(conn, now_et=now)
+
+        assert queued == []
+    finally:
+        conn.close()

@@ -214,6 +214,42 @@ def create_option_spread_open(
     return get(conn, int(cur.lastrowid))
 
 
+def create_option_spread_close(
+    conn: sqlite3.Connection,
+    *,
+    symbol: str,
+    qty: int,
+    limit_debit: float,
+    run_at: str | None = None,
+    dry_run: bool = False,
+    payload: dict[str, Any],
+) -> TradeRequest:
+    now = utc_now()
+    cur = conn.execute(
+        """
+        INSERT INTO trade_requests (
+            kind, symbol, qty, side, order_type, run_at, status, dry_run,
+            payload, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "option_spread_close",
+            symbol.upper(),
+            qty,
+            "buy",
+            "limit_debit",
+            run_at,
+            STATUS_QUEUED,
+            int(dry_run),
+            json.dumps({**payload, "limit_debit": limit_debit}, sort_keys=True),
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    return get(conn, int(cur.lastrowid))
+
+
 def get(conn: sqlite3.Connection, request_id: int) -> TradeRequest:
     row = conn.execute(
         "SELECT * FROM trade_requests WHERE id = ?", (request_id,)
@@ -261,6 +297,30 @@ def list_strategy_spread_requests(
 ) -> list[TradeRequest]:
     params: list[Any] = []
     where = ["kind = 'option_spread_open'"]
+    if strategy is not None:
+        where.append("json_extract(payload, '$.strategy') = ?")
+        params.append(strategy)
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT * FROM trade_requests
+        WHERE {' AND '.join(where)}
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [_row_to_request(row) for row in rows]
+
+
+def list_strategy_close_requests(
+    conn: sqlite3.Connection,
+    *,
+    strategy: str | None = None,
+    limit: int = 100,
+) -> list[TradeRequest]:
+    params: list[Any] = []
+    where = ["kind = 'option_spread_close'"]
     if strategy is not None:
         where.append("json_extract(payload, '$.strategy') = ?")
         params.append(strategy)
