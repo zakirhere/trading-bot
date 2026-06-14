@@ -107,6 +107,104 @@ def test_find_local_drift_skips_open_with_filled_close(tmp_path):
     assert drift == []
 
 
+def _make_pair(short: str, long: str, *, qty: int = 1) -> spread_audit.Pair:
+    return spread_audit.Pair(
+        short_symbol=short,
+        long_symbol=long,
+        underlying="SPY",
+        expiration="260619",
+        option_type="C",
+        short_strike="755",
+        long_strike="756",
+        width="1",
+        qty=qty,
+    )
+
+
+def test_find_unmatched_broker_pairs_when_no_local_open(tmp_path):
+    # Broker has a paired vertical, but the local db doesn't track it at all
+    # (e.g. opened by hand outside the bot). Reverse drift.
+    conn = db.connect(tmp_path / "tradebot.sqlite")
+    db.init(conn)
+    pair = _make_pair("SPY260619C00755000", "SPY260619C00756000")
+    try:
+        unmatched = spread_audit.find_unmatched_broker_pairs(conn, [pair])
+    finally:
+        conn.close()
+    assert unmatched == [pair]
+
+
+def test_find_unmatched_broker_pairs_when_local_open_is_retired(tmp_path):
+    # Local says we closed this spread, but broker still has both legs (qty
+    # mismatch, fill bug, or manual re-open). Audit must surface this so the
+    # opener doesn't refill "the freed slot".
+    conn = db.connect(tmp_path / "tradebot.sqlite")
+    db.init(conn)
+    pair = _make_pair("SPY260619C00755000", "SPY260619C00756000")
+    try:
+        open_req = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.60,
+            payload={
+                "strategy": "ICL",
+                "short_symbol": pair.short_symbol,
+                "long_symbol": pair.long_symbol,
+                "legs": [],
+            },
+        )
+        db.update_status(conn, open_req.id, status=db.STATUS_FILLED, reason="filled")
+        close_req = db.create_option_spread_close(
+            conn,
+            symbol="SPY",
+            qty=1,
+            limit_debit=0.30,
+            payload={
+                "strategy": "ICL",
+                "open_request_id": open_req.id,
+                "short_symbol": pair.short_symbol,
+                "long_symbol": pair.long_symbol,
+                "legs": [],
+            },
+        )
+        db.update_status(conn, close_req.id, status=db.STATUS_FILLED, reason="filled")
+
+        unmatched = spread_audit.find_unmatched_broker_pairs(conn, [pair])
+    finally:
+        conn.close()
+
+    assert unmatched == [pair]
+
+
+def test_find_unmatched_broker_pairs_returns_empty_when_active_open_matches(tmp_path):
+    conn = db.connect(tmp_path / "tradebot.sqlite")
+    db.init(conn)
+    pair = _make_pair("SPY260619C00755000", "SPY260619C00756000")
+    try:
+        req = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.60,
+            payload={
+                "strategy": "ICL",
+                "short_symbol": pair.short_symbol,
+                "long_symbol": pair.long_symbol,
+                "legs": [],
+            },
+        )
+        db.update_status(conn, req.id, status=db.STATUS_FILLED, reason="filled")
+
+        unmatched = spread_audit.find_unmatched_broker_pairs(conn, [pair])
+    finally:
+        conn.close()
+
+    assert unmatched == []
+
+
 def test_notify_if_changed_dedupes(tmp_path, monkeypatch):
     sent = []
     audit = spread_audit.SpreadAudit(
@@ -128,6 +226,7 @@ def test_notify_if_changed_dedupes(tmp_path, monkeypatch):
             )
         ],
         local_drift=[],
+        unmatched_broker_pairs=[],
         unparsable_option_symbols=[],
         option_open_risk_usd=152.0,
         position_slots=1,
@@ -154,6 +253,7 @@ def test_notify_if_changed_sends_recovery(tmp_path, monkeypatch):
         paired_spreads=[],
         unpaired_legs=[],
         local_drift=[],
+        unmatched_broker_pairs=[],
         unparsable_option_symbols=[],
         option_open_risk_usd=0,
         position_slots=0,
@@ -175,6 +275,7 @@ def test_notify_if_changed_does_not_dedupe_failed_send(tmp_path, monkeypatch):
         paired_spreads=[],
         unpaired_legs=[],
         local_drift=[],
+        unmatched_broker_pairs=[],
         unparsable_option_symbols=["BAD"],
         option_open_risk_usd=0,
         position_slots=0,

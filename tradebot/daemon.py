@@ -126,6 +126,7 @@ def cmd_audit_spreads(*, send_notify: bool, json_output: bool) -> int:
             f"paired={len(audit.paired_spreads)} "
             f"unpaired={len(audit.unpaired_legs)} "
             f"local_drift={len(audit.local_drift)} "
+            f"unmatched_broker={len(audit.unmatched_broker_pairs)} "
             f"option_open_risk=${audit.option_open_risk_usd:.2f} "
             f"position_slots={audit.position_slots}"
         )
@@ -140,6 +141,10 @@ def cmd_audit_spreads(*, send_notify: bool, json_output: bool) -> int:
                     f"  request={item.request_id} strategy={item.strategy} "
                     f"status={item.status} missing={','.join(item.missing_broker_symbols)}"
                 )
+        if audit.unmatched_broker_pairs:
+            print("unmatched_broker_pairs:")
+            for pair in audit.unmatched_broker_pairs:
+                print(f"  {pair.short_symbol}/{pair.long_symbol} qty={pair.qty}")
         if audit.unparsable_option_symbols:
             print("unparsable:")
             for symbol in audit.unparsable_option_symbols:

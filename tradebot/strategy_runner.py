@@ -54,7 +54,7 @@ def run_icl_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
         return None
 
     existing = icl_requests_for_day(conn, now_et)
-    closed_today = filled_close_open_ids(conn, strategy="ICL")
+    closed_today = db.filled_close_open_ids(conn, strategy="ICL")
     active_existing = active_strategy_requests(existing, closed_open_ids=closed_today)
     if len(active_existing) >= spy_credit_strategy.ICL_TARGET_ACTIVE_TRADES:
         return None
@@ -243,7 +243,7 @@ def run_dca_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
         return None
 
     existing = strategy_requests_for_day(conn, now_et, strategy="DCA")
-    closed_today = filled_close_open_ids(conn, strategy="DCA")
+    closed_today = db.filled_close_open_ids(conn, strategy="DCA")
     active_existing = active_strategy_requests(existing, closed_open_ids=closed_today)
     if len(active_existing) >= DCA_DAILY_TARGET_ENTRIES:
         return None
@@ -481,7 +481,7 @@ def active_strategy_requests(
 
 
 def active_strategy_spread_count(conn: sqlite3.Connection, *, strategy: str) -> int:
-    closed = filled_close_open_ids(conn, strategy=strategy)
+    closed = db.filled_close_open_ids(conn, strategy=strategy)
     requests = db.list_strategy_spread_requests(conn, strategy=strategy, limit=1000)
     return len(active_strategy_requests(requests, closed_open_ids=closed))
 
@@ -491,13 +491,8 @@ def filled_close_open_ids(
     *,
     strategy: str | None = None,
 ) -> set[int]:
-    closes = db.list_strategy_close_requests(conn, strategy=strategy, limit=1000)
-    return {
-        int(req.payload["open_request_id"])
-        for req in closes
-        if req.status == db.STATUS_FILLED
-        and req.payload.get("open_request_id") is not None
-    }
+    # Backwards-compat shim — the canonical helper now lives on db.
+    return db.filled_close_open_ids(conn, strategy=strategy)
 
 
 def next_due_slot(

@@ -57,6 +57,7 @@ class SpreadAudit:
     paired_spreads: list[Pair]
     unpaired_legs: list[UnpairedLeg]
     local_drift: list[LocalDrift]
+    unmatched_broker_pairs: list[Pair]
     unparsable_option_symbols: list[str]
     option_open_risk_usd: float
     position_slots: int
@@ -66,6 +67,7 @@ class SpreadAudit:
         return (
             not self.unpaired_legs
             and not self.local_drift
+            and not self.unmatched_broker_pairs
             and not self.unparsable_option_symbols
         )
 
@@ -93,6 +95,7 @@ def run() -> SpreadAudit:
     db.init(conn)
     try:
         local_drift = find_local_drift(conn, broker_symbols)
+        unmatched = find_unmatched_broker_pairs(conn, paired_spreads)
     finally:
         conn.close()
 
@@ -104,6 +107,7 @@ def run() -> SpreadAudit:
         paired_spreads=paired_spreads,
         unpaired_legs=unpaired_legs,
         local_drift=local_drift,
+        unmatched_broker_pairs=unmatched,
         unparsable_option_symbols=unparsable,
         option_open_risk_usd=risk.estimate_open_risk_usd(positions),
         position_slots=risk.estimate_position_slots(positions),
@@ -180,7 +184,7 @@ def unpaired_leg(option: risk.OptionPosition, side: str) -> UnpairedLeg:
 
 def find_local_drift(conn, broker_symbols: set[str]) -> list[LocalDrift]:
     drift: list[LocalDrift] = []
-    closed_open_ids = _filled_close_open_ids(conn)
+    closed_open_ids = db.filled_close_open_ids(conn)
     for req in db.list_strategy_spread_requests(conn, limit=1000):
         if req.status not in ACTIVE_STATUSES:
             continue
@@ -208,14 +212,30 @@ def find_local_drift(conn, broker_symbols: set[str]) -> list[LocalDrift]:
     return drift
 
 
-def _filled_close_open_ids(conn) -> set[int]:
-    closes = db.list_strategy_close_requests(conn, limit=1000)
-    return {
-        int(req.payload["open_request_id"])
-        for req in closes
-        if req.status == db.STATUS_FILLED
-        and req.payload.get("open_request_id") is not None
-    }
+def find_unmatched_broker_pairs(conn, pairs: list[Pair]) -> list[Pair]:
+    # Reverse drift: broker has both legs but no active local open tracks them.
+    # Possible causes: qty mismatch where the close retired only some of the position,
+    # spreads opened manually outside the bot, or close-fill bugs that mark a close
+    # filled while the broker position remains. Returning these means we won't
+    # silently double up if a strategy refills "the freed slot".
+    closed_open_ids = db.filled_close_open_ids(conn)
+    active_pair_keys: set[frozenset[str]] = set()
+    for req in db.list_strategy_spread_requests(conn, limit=1000):
+        if req.status not in ACTIVE_STATUSES:
+            continue
+        if req.id in closed_open_ids:
+            continue
+        short = req.payload.get("short_symbol")
+        long = req.payload.get("long_symbol")
+        if short and long:
+            active_pair_keys.add(frozenset([short, long]))
+
+    unmatched: list[Pair] = []
+    for pair in pairs:
+        key = frozenset([pair.short_symbol, pair.long_symbol])
+        if key not in active_pair_keys:
+            unmatched.append(pair)
+    return unmatched
 
 
 def fingerprint(audit: SpreadAudit) -> str:
@@ -226,6 +246,10 @@ def fingerprint(audit: SpreadAudit) -> str:
         ),
         "local_drift": sorted(
             (asdict(item) for item in audit.local_drift),
+            key=lambda item: json.dumps(item, sort_keys=True),
+        ),
+        "unmatched_broker_pairs": sorted(
+            (asdict(item) for item in audit.unmatched_broker_pairs),
             key=lambda item: json.dumps(item, sort_keys=True),
         ),
         "unparsable_option_symbols": sorted(audit.unparsable_option_symbols),
@@ -252,7 +276,11 @@ def notify_if_changed(audit: SpreadAudit, *, state_file: Path = AUDIT_STATE_FILE
             write_fingerprint(state_file, current, audit.checked_at)
         return sent
 
-    level = "critical" if audit.unpaired_short_count or audit.local_drift else "warning"
+    level = (
+        "critical"
+        if audit.unpaired_short_count or audit.local_drift or audit.unmatched_broker_pairs
+        else "warning"
+    )
     sent = notify.send(
         notify.Alert(
             level=level,
@@ -289,6 +317,7 @@ def summary_fields(audit: SpreadAudit) -> dict[str, Any]:
         "unpaired_legs": len(audit.unpaired_legs),
         "unpaired_shorts": audit.unpaired_short_count,
         "local_drift": len(audit.local_drift),
+        "unmatched_broker_pairs": len(audit.unmatched_broker_pairs),
         "option_open_risk": f"${audit.option_open_risk_usd:.2f}",
         "position_slots": audit.position_slots,
     }
@@ -305,6 +334,10 @@ def human_summary(audit: SpreadAudit) -> str:
             f"CRITICAL local drift: request {item.request_id} "
             f"{item.strategy} {item.status} missing {missing}"
         )
+    for item in audit.unmatched_broker_pairs[:5]:
+        lines.append(
+            f"CRITICAL unmatched broker pair: {item.short_symbol}/{item.long_symbol} qty={item.qty}"
+        )
     for symbol in audit.unparsable_option_symbols[:5]:
         lines.append(f"WARNING unparsable option symbol: {symbol}")
     if not lines:
@@ -312,6 +345,7 @@ def human_summary(audit: SpreadAudit) -> str:
     remaining = (
         len(audit.unpaired_legs)
         + len(audit.local_drift)
+        + len(audit.unmatched_broker_pairs)
         + len(audit.unparsable_option_symbols)
         - len(lines)
     )
@@ -329,6 +363,7 @@ def to_dict(audit: SpreadAudit) -> dict[str, Any]:
         "paired_spreads": [asdict(item) for item in audit.paired_spreads],
         "unpaired_legs": [asdict(item) for item in audit.unpaired_legs],
         "local_drift": [asdict(item) for item in audit.local_drift],
+        "unmatched_broker_pairs": [asdict(item) for item in audit.unmatched_broker_pairs],
         "unparsable_option_symbols": audit.unparsable_option_symbols,
         "option_open_risk_usd": audit.option_open_risk_usd,
         "position_slots": audit.position_slots,

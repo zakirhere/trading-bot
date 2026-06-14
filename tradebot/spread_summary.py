@@ -72,8 +72,9 @@ def build(conn, *, positions: list[dict[str, Any]], mode: str) -> SpreadSummary:
         if position.get("asset_class") == "us_option" and position.get("symbol")
     }
     local_spreads = db.list_strategy_spread_requests(conn, limit=2000)
+    closed_open_ids = db.filled_close_open_ids(conn)
     open_spreads = [
-        _open_spread(pair, local_spreads, position_market_values)
+        _open_spread(pair, local_spreads, position_market_values, closed_open_ids)
         for pair in pairs
     ]
     total_pnl = sum(
@@ -104,8 +105,9 @@ def _open_spread(
     pair: spread_audit.Pair,
     local_spreads: list[db.TradeRequest],
     position_market_values: dict[str, Decimal],
+    closed_open_ids: set[int],
 ) -> OpenSpread:
-    local = _match_local(pair, local_spreads)
+    local = _match_local(pair, local_spreads, closed_open_ids)
     entry_credit = _decimal_payload(local, "limit_credit") if local else None
     qty = Decimal(pair.qty)
     net_market_value = (
@@ -138,10 +140,16 @@ def _open_spread(
     )
 
 
-def _match_local(pair: spread_audit.Pair, requests: list[db.TradeRequest]) -> db.TradeRequest | None:
+def _match_local(
+    pair: spread_audit.Pair,
+    requests: list[db.TradeRequest],
+    closed_open_ids: set[int],
+) -> db.TradeRequest | None:
     pair_symbols = {pair.short_symbol, pair.long_symbol}
     for req in requests:
         if req.status not in ACTIVE_STATUSES:
+            continue
+        if req.id in closed_open_ids:
             continue
         payload = req.payload
         if pair_symbols == {payload.get("short_symbol"), payload.get("long_symbol")}:

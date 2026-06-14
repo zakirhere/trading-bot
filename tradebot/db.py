@@ -337,6 +337,20 @@ def list_strategy_close_requests(
     return [_row_to_request(row) for row in rows]
 
 
+def filled_close_open_ids(
+    conn: sqlite3.Connection,
+    *,
+    strategy: str | None = None,
+) -> set[int]:
+    closes = list_strategy_close_requests(conn, strategy=strategy, limit=1000)
+    return {
+        int(req.payload["open_request_id"])
+        for req in closes
+        if req.status == STATUS_FILLED
+        and req.payload.get("open_request_id") is not None
+    }
+
+
 def due_requests(conn: sqlite3.Connection, *, now: str | None = None) -> list[TradeRequest]:
     now = now or utc_now()
     rows = conn.execute(
