@@ -64,6 +64,49 @@ def test_find_local_drift_flags_missing_broker_leg(tmp_path):
     assert drift[0].missing_broker_symbols == ["SPY260702C00756000"]
 
 
+def test_find_local_drift_skips_open_with_filled_close(tmp_path):
+    # Once a paired close has filled, the open is properly retired —
+    # the absent broker legs are expected, not drift.
+    conn = db.connect(tmp_path / "tradebot.sqlite")
+    db.init(conn)
+    try:
+        open_req = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.60,
+            payload={
+                "strategy": "ICL",
+                "short_symbol": "SPY260702C00755000",
+                "long_symbol": "SPY260702C00756000",
+                "legs": [],
+            },
+        )
+        db.update_status(conn, open_req.id, status=db.STATUS_FILLED, reason="filled")
+
+        close_req = db.create_option_spread_close(
+            conn,
+            symbol="SPY",
+            qty=1,
+            limit_debit=0.30,
+            payload={
+                "strategy": "ICL",
+                "open_request_id": open_req.id,
+                "short_symbol": "SPY260702C00755000",
+                "long_symbol": "SPY260702C00756000",
+                "legs": [],
+            },
+        )
+        db.update_status(conn, close_req.id, status=db.STATUS_FILLED, reason="filled")
+
+        drift = spread_audit.find_local_drift(conn, broker_symbols=set())
+    finally:
+        conn.close()
+
+    assert drift == []
+
+
 def test_notify_if_changed_dedupes(tmp_path, monkeypatch):
     sent = []
     audit = spread_audit.SpreadAudit(

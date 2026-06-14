@@ -268,6 +268,13 @@ def _enable_icl_autorun(monkeypatch, *, fake_data, alpaca_is_live=False):
         lambda: SimpleNamespace(is_live=alpaca_is_live),
     )
     monkeypatch.setattr(strategy_runner.spy_credit_strategy, "AlpacaMarketData", lambda cfg: fake_data)
+    # Default: pretend the broker has every leg the fake quote data knows about.
+    # Tests that exercise the broker-presence guard can override this after.
+    monkeypatch.setattr(
+        strategy_runner,
+        "open_option_symbols",
+        lambda cfg: set(fake_data.quotes.keys()),
+    )
     strategy_runner._icl_exit_last_run = None
 
 
@@ -463,5 +470,114 @@ def test_icl_exit_scheduler_blocks_after_market_close(tmp_path, monkeypatch):
         queued = strategy_runner.run_icl_exit_scheduler_once(conn, now_et=after)
 
         assert queued == []
+    finally:
+        conn.close()
+
+
+def test_icl_exit_scheduler_skips_when_legs_missing_from_broker(tmp_path, monkeypatch):
+    # Locally-filled ICL whose broker legs are gone (manually closed, expired,
+    # whatever) must NOT have a phantom close queued against it.
+    conn = _conn(tmp_path)
+    short = "SPY260619C00755000"
+    long = "SPY260619C00756000"
+    fake = _FakeQuoteData({
+        short: {"ap": "0.40", "bp": "0.38"},
+        long: {"ap": "0.12", "bp": "0.10"},
+    })
+    _enable_icl_autorun(monkeypatch, fake_data=fake)
+    monkeypatch.setattr(strategy_runner, "open_option_symbols", lambda cfg: set())
+
+    try:
+        _seed_filled_icl_open(conn, credit=Decimal("0.60"), short=short, long=long)
+        now = datetime(2026, 6, 12, 11, 0, tzinfo=ET)
+
+        queued = strategy_runner.run_icl_exit_scheduler_once(conn, now_et=now)
+
+        assert queued == []
+        assert db.list_strategy_close_requests(conn, strategy="ICL") == []
+        # And we should NOT have wasted a quote fetch — broker check kills it first.
+        assert fake.calls == 0
+    finally:
+        conn.close()
+
+
+def test_active_strategy_requests_excludes_open_with_filled_close(tmp_path):
+    conn = _conn(tmp_path)
+    try:
+        open_req = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.60,
+            payload={
+                "strategy": "ICL",
+                "short_symbol": "SPY260619C00755000",
+                "long_symbol": "SPY260619C00756000",
+                "legs": [],
+            },
+        )
+        db.update_status(conn, open_req.id, status=db.STATUS_FILLED, reason="filled")
+        close_req = db.create_option_spread_close(
+            conn,
+            symbol="SPY",
+            qty=1,
+            limit_debit=0.30,
+            payload={
+                "strategy": "ICL",
+                "open_request_id": open_req.id,
+                "short_symbol": "SPY260619C00755000",
+                "long_symbol": "SPY260619C00756000",
+                "legs": [],
+            },
+        )
+        db.update_status(conn, close_req.id, status=db.STATUS_FILLED, reason="filled")
+
+        # Without the closed-id filter the open looks active. With it, the slot frees.
+        all_reqs = db.list_strategy_spread_requests(conn, strategy="ICL", limit=100)
+        assert strategy_runner.active_strategy_requests(all_reqs) == [
+            db.get(conn, open_req.id)
+        ]
+        closed = strategy_runner.filled_close_open_ids(conn, strategy="ICL")
+        assert open_req.id in closed
+        active = strategy_runner.active_strategy_requests(
+            all_reqs, closed_open_ids=closed
+        )
+        assert active == []
+
+        # End-to-end: the spread-count helper should agree.
+        assert strategy_runner.active_strategy_spread_count(conn, strategy="ICL") == 0
+    finally:
+        conn.close()
+
+
+def test_active_strategy_spread_count_still_includes_open_with_pending_close(tmp_path):
+    # Idempotency shouldn't free the slot prematurely — only a *filled* close retires the open.
+    conn = _conn(tmp_path)
+    try:
+        open_req = db.create_option_spread_open(
+            conn,
+            symbol="SPY",
+            qty=1,
+            side="sell",
+            limit_credit=0.60,
+            payload={"strategy": "ICL", "legs": []},
+        )
+        db.update_status(conn, open_req.id, status=db.STATUS_FILLED, reason="filled")
+        close_req = db.create_option_spread_close(
+            conn,
+            symbol="SPY",
+            qty=1,
+            limit_debit=0.30,
+            payload={
+                "strategy": "ICL",
+                "open_request_id": open_req.id,
+                "legs": [],
+            },
+        )
+        # Close is queued/submitted but NOT filled — broker still has the legs.
+        db.update_status(conn, close_req.id, status=db.STATUS_SUBMITTED, reason="new")
+
+        assert strategy_runner.active_strategy_spread_count(conn, strategy="ICL") == 1
     finally:
         conn.close()

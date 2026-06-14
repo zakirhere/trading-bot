@@ -54,7 +54,8 @@ def run_icl_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
         return None
 
     existing = icl_requests_for_day(conn, now_et)
-    active_existing = active_strategy_requests(existing)
+    closed_today = filled_close_open_ids(conn, strategy="ICL")
+    active_existing = active_strategy_requests(existing, closed_open_ids=closed_today)
     if len(active_existing) >= spy_credit_strategy.ICL_TARGET_ACTIVE_TRADES:
         return None
     if len(existing) >= spy_credit_strategy.ICL_MAX_DAILY_ENTRIES:
@@ -131,7 +132,7 @@ def run_icl_exit_scheduler_once(
         and req.payload.get("open_request_id") is not None
     }
 
-    candidates: list[db.TradeRequest] = []
+    pending_candidates: list[db.TradeRequest] = []
     for open_req in opens:
         if open_req.status != db.STATUS_FILLED:
             continue
@@ -139,8 +140,17 @@ def run_icl_exit_scheduler_once(
             continue
         if not {"short_symbol", "long_symbol", "credit"} <= set(open_req.payload):
             continue
-        candidates.append(open_req)
+        pending_candidates.append(open_req)
 
+    if not pending_candidates:
+        return []
+
+    broker_symbols = open_option_symbols(alpaca_cfg)
+    candidates = [
+        open_req for open_req in pending_candidates
+        if open_req.payload["short_symbol"] in broker_symbols
+        and open_req.payload["long_symbol"] in broker_symbols
+    ]
     if not candidates:
         return []
 
@@ -233,7 +243,8 @@ def run_dca_scheduler_once(conn: sqlite3.Connection, *, now_et: datetime | None 
         return None
 
     existing = strategy_requests_for_day(conn, now_et, strategy="DCA")
-    active_existing = active_strategy_requests(existing)
+    closed_today = filled_close_open_ids(conn, strategy="DCA")
+    active_existing = active_strategy_requests(existing, closed_open_ids=closed_today)
     if len(active_existing) >= DCA_DAILY_TARGET_ENTRIES:
         return None
 
@@ -456,13 +467,37 @@ def open_option_symbols(alpaca_cfg: config.AlpacaConfig) -> set[str]:
         b.close()
 
 
-def active_strategy_requests(requests: list[db.TradeRequest]) -> list[db.TradeRequest]:
+def active_strategy_requests(
+    requests: list[db.TradeRequest],
+    *,
+    closed_open_ids: set[int] | None = None,
+) -> list[db.TradeRequest]:
     inactive_statuses = {db.STATUS_BLOCKED, db.STATUS_ERROR, db.STATUS_DRY_RUN}
-    return [req for req in requests if req.status not in inactive_statuses]
+    closed = closed_open_ids or set()
+    return [
+        req for req in requests
+        if req.status not in inactive_statuses and req.id not in closed
+    ]
 
 
 def active_strategy_spread_count(conn: sqlite3.Connection, *, strategy: str) -> int:
-    return len(active_strategy_requests(db.list_strategy_spread_requests(conn, strategy=strategy, limit=1000)))
+    closed = filled_close_open_ids(conn, strategy=strategy)
+    requests = db.list_strategy_spread_requests(conn, strategy=strategy, limit=1000)
+    return len(active_strategy_requests(requests, closed_open_ids=closed))
+
+
+def filled_close_open_ids(
+    conn: sqlite3.Connection,
+    *,
+    strategy: str | None = None,
+) -> set[int]:
+    closes = db.list_strategy_close_requests(conn, strategy=strategy, limit=1000)
+    return {
+        int(req.payload["open_request_id"])
+        for req in closes
+        if req.status == db.STATUS_FILLED
+        and req.payload.get("open_request_id") is not None
+    }
 
 
 def next_due_slot(

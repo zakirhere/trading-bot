@@ -180,8 +180,11 @@ def unpaired_leg(option: risk.OptionPosition, side: str) -> UnpairedLeg:
 
 def find_local_drift(conn, broker_symbols: set[str]) -> list[LocalDrift]:
     drift: list[LocalDrift] = []
+    closed_open_ids = _filled_close_open_ids(conn)
     for req in db.list_strategy_spread_requests(conn, limit=1000):
         if req.status not in ACTIVE_STATUSES:
+            continue
+        if req.id in closed_open_ids:
             continue
         payload = req.payload
         short_symbol = payload.get("short_symbol")
@@ -203,6 +206,16 @@ def find_local_drift(conn, broker_symbols: set[str]) -> list[LocalDrift]:
                 )
             )
     return drift
+
+
+def _filled_close_open_ids(conn) -> set[int]:
+    closes = db.list_strategy_close_requests(conn, limit=1000)
+    return {
+        int(req.payload["open_request_id"])
+        for req in closes
+        if req.status == db.STATUS_FILLED
+        and req.payload.get("open_request_id") is not None
+    }
 
 
 def fingerprint(audit: SpreadAudit) -> str:
